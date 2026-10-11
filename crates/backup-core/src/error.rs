@@ -14,6 +14,12 @@ pub enum BackupError {
     #[error("Không đủ dung lượng: cần {} MB, ổ đích còn {} MB", .needed / 1_048_576, .available / 1_048_576)]
     InsufficientSpace { needed: u64, available: u64 },
 
+    #[error("{0}")]
+    Remote(String),
+
+    #[error("Chưa có mật khẩu FTP cho job này")]
+    MissingPassword,
+
     #[error("Đã huỷ")]
     Cancelled,
 

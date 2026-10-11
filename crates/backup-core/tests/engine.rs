@@ -3,7 +3,8 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
 use backup_core::config::Job;
-use backup_core::engine::{prune_versions, Progress};
+use backup_core::engine::Progress;
+use backup_core::storage::{LocalStorage, Storage};
 use backup_core::job::{dest_dir, run_job_at};
 use backup_core::marker::init_target;
 use backup_core::plan::{build_plan, ActionKind, PlanOptions};
@@ -16,7 +17,7 @@ fn write(p: &Path, s: &str) {
 
 fn job(src: &Path, target: &Path) -> Job {
     let m = init_target(target, "test usb", false).unwrap();
-    let mut j = Job::new("Tai lieu", src, m.id);
+    let mut j = Job::usb("Tai lieu", src, m.id);
     j.excludes = vec!["*.tmp".into()];
     j
 }
@@ -74,7 +75,7 @@ fn full_cycle_with_versioning() {
     assert_eq!((r.created, r.updated, r.deleted), (0, 0, 0));
 
     // prune với 0 ngày giữ lại -> chưa xoá vì snapshot vừa tạo (cutoff = now)
-    assert!(prune_versions(&dst, 1).unwrap() == 0);
+    assert_eq!(LocalStorage::new(&dst).prune_versions(1).unwrap(), 0);
 }
 
 #[test]

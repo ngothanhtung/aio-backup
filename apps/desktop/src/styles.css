@@ -130,3 +130,18 @@ label > input, label > select, label > textarea, label > .row { margin-top: 4px;
   background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 8px;
   max-width: 90vw; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
 }
+
+/* --- Đích FTP --- */
+.dot.ftp { background: var(--accent); border-radius: 2px; }
+.field { margin-bottom: 12px; }
+.field-label { display: block; font-weight: 500; margin-bottom: 4px; }
+.segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; padding: 2px; gap: 2px; }
+.segmented button { border: none; background: transparent; padding: 5px 14px; border-radius: 6px; }
+.segmented button.active { background: var(--accent); color: var(--accent-text); }
+.ftp-box { border: 1px solid var(--border); border-radius: 10px; padding: 12px 12px 4px; margin-bottom: 12px; background: var(--bg); }
+.ftp-box input { background: var(--surface); }
+.grid-2 { display: grid; grid-template-columns: 1fr 120px; gap: 10px; }
+.grid-2:nth-of-type(2) { grid-template-columns: 1fr 1fr; }
+.row.center { align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.hint { margin: 4px 0 10px; font-weight: normal; }
+.hint.warn { color: var(--bad); }

@@ -20,11 +20,22 @@ export interface DriveInfo {
   marker: TargetMarker | null;
 }
 
+export interface FtpTarget {
+  host: string;
+  port: number;
+  username: string;
+  remote_dir: string;
+  secure: boolean;
+  accept_invalid_certs: boolean;
+}
+
+export type Destination = { kind: "usb"; target_id: Uuid } | ({ kind: "ftp" } & FtpTarget);
+
 export interface Job {
   id: Uuid;
   name: string;
   source: string;
-  target_id: Uuid;
+  destination: Destination;
   dest_subdir: string;
   excludes: string[];
   mirror_deletes: boolean;
@@ -32,6 +43,7 @@ export interface Job {
   keep_versions_days: number | null;
   verify_hash: boolean;
   auto_run: boolean;
+  interval_minutes: number | null;
 }
 
 export interface Config {
@@ -84,7 +96,10 @@ export const api = {
   getDrives: () => invoke<DriveInfo[]>("get_drives"),
   markTarget: (path: string, label: string, force = false) =>
     invoke<TargetMarker>("mark_target", { path, label, force }),
-  saveJob: (job: Job) => invoke<Config>("save_job", { job }),
+  saveJob: (job: Job, password?: string) =>
+    invoke<{ config: Config; warning: string | null }>("save_job", { job, password: password || null }),
+  testFtp: (ftp: FtpTarget, password: string, jobId?: Uuid) =>
+    invoke<string>("test_ftp", { ftp, password: password || null, jobId: jobId ?? null }),
   deleteJob: (id: Uuid) => invoke<Config>("delete_job", { id }),
   startJob: (id: Uuid, dryRun: boolean) => invoke<void>("start_job", { id, dryRun }),
   cancelJob: (id: Uuid) => invoke<void>("cancel_job", { id }),
@@ -92,12 +107,24 @@ export const api = {
   getHistory: (limit = 30) => invoke<HistoryEntry[]>("get_history", { limit }),
 };
 
-export function newJob(targetId: Uuid): Job {
+export const emptyFtp = (): FtpTarget => ({
+  host: "",
+  port: 21,
+  username: "",
+  remote_dir: "/backup",
+  secure: true,
+  accept_invalid_certs: false,
+});
+
+/** Job mới: đích USB nếu đã có ổ đích, ngược lại FTP. */
+export function newJob(usbTargetId?: Uuid): Job {
   return {
     id: crypto.randomUUID(),
     name: "",
     source: "",
-    target_id: targetId,
+    destination: usbTargetId
+      ? { kind: "usb", target_id: usbTargetId }
+      : { kind: "ftp", ...emptyFtp() },
     dest_subdir: "",
     excludes: ["node_modules", ".git", "*.tmp"],
     mirror_deletes: false,
@@ -105,7 +132,13 @@ export function newJob(targetId: Uuid): Job {
     keep_versions_days: 30,
     verify_hash: false,
     auto_run: true,
+    interval_minutes: usbTargetId ? null : 60,
   };
+}
+
+export function ftpUrl(f: FtpTarget): string {
+  const dir = f.remote_dir.replace(/^\/+|\/+$/g, "");
+  return `${f.secure ? "ftps" : "ftp"}://${f.username}@${f.host}${f.port === 21 ? "" : `:${f.port}`}${dir ? `/${dir}` : ""}`;
 }
 
 export function bytes(n: number): string {

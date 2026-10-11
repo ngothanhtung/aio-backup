@@ -1,4 +1,4 @@
-//! usb-backup CLI: dùng để test core, chạy headless hoặc gắn vào cron/Task Scheduler.
+//! aio-backup CLI: test core, chạy headless hoặc gắn vào cron/Task Scheduler.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -7,18 +7,21 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use backup_core::config::{default_config_path, Config, Job};
+use backup_core::config::{default_config_path, Config, Destination, FtpTarget, Job};
 use backup_core::drives::list_drives;
 use backup_core::engine::{Progress, Report};
 use backup_core::history;
-use backup_core::job::{dest_dir, locate_target, run_job_at};
+use backup_core::job::{locate_target, open_storage, run_job_on};
 use backup_core::marker::{init_target, read_marker};
+use backup_core::schedule::{Scheduler, Trigger};
+use backup_core::secrets::{self, PASSWORD_ENV};
+use backup_core::storage::{ftp::test_connection, Storage};
 use clap::{Args, Parser, Subcommand};
 use indicatif::{HumanBytes, ProgressBar, ProgressStyle};
 use uuid::Uuid;
 
 #[derive(Parser)]
-#[command(name = "usb-backup", version, about = "Backup thư mục sang ổ USB")]
+#[command(name = "aio-backup", version, about = "AIO Backup: backup thư mục sang ổ USB hoặc FTP/FTPS")]
 struct Cli {
     /// Đường dẫn file config (mặc định theo chuẩn từng OS)
     #[arg(long, global = true)]
@@ -32,10 +35,10 @@ struct Cli {
 enum Cmd {
     /// Liệt kê ổ đĩa đang mount
     Drives,
-    /// Đánh dấu một ổ/thư mục làm đích backup (tạo file .backup-id)
+    /// Đánh dấu một ổ làm đích backup (tạo file .backup-id ở gốc ổ)
     InitTarget {
         path: PathBuf,
-        #[arg(long, default_value = "USB Backup")]
+        #[arg(long, default_value = "Ổ backup")]
         label: String,
         #[arg(long)]
         force: bool,
@@ -48,16 +51,16 @@ enum Cmd {
         job: String,
         #[arg(long)]
         dry_run: bool,
-        /// Ghi vào thư mục này thay vì tự tìm ổ theo marker
+        /// (USB) Ghi vào thư mục này thay vì tự tìm ổ theo marker
         #[arg(long)]
         target_path: Option<PathBuf>,
     },
-    /// Chạy mọi job có ổ đích đang cắm
+    /// Chạy mọi job: USB đang cắm và tất cả job FTP
     RunAll {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Chạy nền: phát hiện USB được cắm thì tự chạy các job auto_run
+    /// Chạy nền: cắm USB thì backup, job có lịch thì chạy định kỳ
     Watch,
     /// Xem lịch sử chạy
     History {
@@ -68,9 +71,20 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum JobCmd {
+    /// Thêm job. Đích là USB (--target) hoặc FTP (--ftp)
     Add(AddJob),
     List,
-    Remove { job: String },
+    Remove {
+        job: String,
+    },
+    /// Đặt lại mật khẩu FTP của job
+    SetPassword {
+        job: String,
+    },
+    /// Kiểm tra kết nối và quyền ghi tới đích FTP
+    Test {
+        job: String,
+    },
 }
 
 #[derive(Args)]
@@ -79,9 +93,21 @@ struct AddJob {
     name: String,
     #[arg(long)]
     source: PathBuf,
-    /// UUID của ổ đích, hoặc đường dẫn tới ổ đã init-target
+    /// USB: UUID của ổ đích, hoặc đường dẫn tới ổ đã init-target
+    #[arg(long, conflicts_with = "ftp", required_unless_present = "ftp")]
+    target: Option<String>,
+    /// FTP: ftp://user@host[:port]/thu-muc  hoặc  ftps://... (FTPS explicit)
     #[arg(long)]
-    target: String,
+    ftp: Option<String>,
+    /// FTP: chấp nhận chứng chỉ tự ký (NAS trong LAN)
+    #[arg(long, requires = "ftp")]
+    insecure: bool,
+    /// FTP: mật khẩu (bỏ trống thì hỏi khi chạy lệnh, hoặc lấy từ biến AIO_BACKUP_FTP_PASSWORD)
+    #[arg(long, requires = "ftp")]
+    password: Option<String>,
+    /// Chạy định kỳ mỗi N phút (mặc định FTP: 60)
+    #[arg(long)]
+    every: Option<u32>,
     #[arg(long, default_value = "")]
     subdir: String,
     /// Glob loại trừ, lặp lại được: --exclude node_modules --exclude "*.tmp"
@@ -95,7 +121,7 @@ struct AddJob {
     /// Giữ snapshot .versions trong N ngày (0 = giữ mãi)
     #[arg(long, default_value_t = 30)]
     keep_days: u32,
-    /// So blake3 khi size bằng nhau nhưng mtime khác
+    /// So blake3 khi size bằng nhau nhưng mtime khác (chỉ USB)
     #[arg(long)]
     hash: bool,
     /// Không tự chạy khi cắm USB
@@ -106,7 +132,7 @@ struct AddJob {
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn,suppaftp=off".into()),
         )
         .init();
 
@@ -139,15 +165,11 @@ fn main() -> Result<()> {
             target_path,
         } => {
             let cfg = Config::load(&cfg_path)?;
-            let job = cfg
-                .find_job(&job)
-                .with_context(|| format!("Không có job '{job}'"))?
-                .clone();
-            let root = match target_path {
-                Some(p) => p,
-                None => locate_target(&job)?,
+            let job = find(&cfg, &job)?;
+            let r = match target_path {
+                Some(root) => run_usb_at(&job, &root, dry_run, &cancel)?,
+                None => run_one(&job, dry_run, &cancel)?,
             };
-            let r = run_one(&job, &root, dry_run, &cancel)?;
             if !r.ok() {
                 std::process::exit(2);
             }
@@ -160,12 +182,13 @@ fn main() -> Result<()> {
                 if cancel.load(Ordering::Relaxed) {
                     break;
                 }
-                match locate_target(job) {
-                    Ok(root) => {
-                        run_one(job, &root, dry_run, &cancel)?;
-                        ran += 1;
-                    }
-                    Err(_) => println!("- {}: ổ đích chưa cắm, bỏ qua", job.name),
+                if matches!(job.destination, Destination::Usb { .. }) && locate_target(job).is_err() {
+                    println!("- {}: ổ đích chưa cắm, bỏ qua", job.name);
+                    continue;
+                }
+                match run_one(job, dry_run, &cancel) {
+                    Ok(_) => ran += 1,
+                    Err(e) => println!("  ✗ {}: {e:#}", job.name),
                 }
             }
             println!("Đã chạy {ran}/{} job", cfg.jobs.len());
@@ -191,6 +214,12 @@ fn main() -> Result<()> {
     }
 }
 
+fn find(cfg: &Config, key: &str) -> Result<Job> {
+    cfg.find_job(key)
+        .cloned()
+        .with_context(|| format!("Không có job '{key}'"))
+}
+
 fn cmd_drives() -> Result<()> {
     for d in list_drives() {
         let tag = match &d.marker {
@@ -210,6 +239,60 @@ fn cmd_drives() -> Result<()> {
     Ok(())
 }
 
+/// Phân tích `ftp[s]://user[:pass]@host[:port]/dir`.
+fn parse_ftp_url(url: &str) -> Result<(FtpTarget, Option<String>)> {
+    let (secure, rest) = if let Some(r) = url.strip_prefix("ftps://") {
+        (true, r)
+    } else if let Some(r) = url.strip_prefix("ftp://") {
+        (false, r)
+    } else {
+        bail!("URL FTP phải bắt đầu bằng ftp:// hoặc ftps://");
+    };
+    let (authority, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, ""),
+    };
+    let (userinfo, hostport) = authority
+        .rsplit_once('@')
+        .context("Thiếu tên đăng nhập: ftp://user@host/...")?;
+    let (username, password) = match userinfo.split_once(':') {
+        Some((u, p)) => (u.to_string(), Some(p.to_string())),
+        None => (userinfo.to_string(), None),
+    };
+    let (host, port) = match hostport.rsplit_once(':') {
+        Some((h, p)) => (h.to_string(), p.parse().context("Cổng không hợp lệ")?),
+        None => (hostport.to_string(), 21),
+    };
+    if host.is_empty() || username.is_empty() {
+        bail!("URL FTP thiếu host hoặc user");
+    }
+    Ok((
+        FtpTarget {
+            host,
+            port,
+            username,
+            remote_dir: path.trim_end_matches('/').to_string(),
+            secure,
+            accept_invalid_certs: false,
+            password: None,
+        },
+        password,
+    ))
+}
+
+fn ask_password(prompt: &str) -> Result<String> {
+    if let Ok(p) = std::env::var(PASSWORD_ENV) {
+        if !p.is_empty() {
+            return Ok(p);
+        }
+    }
+    let p = rpassword::prompt_password(prompt).context("Không đọc được mật khẩu")?;
+    if p.is_empty() {
+        bail!("Mật khẩu trống");
+    }
+    Ok(p)
+}
+
 fn cmd_job(cmd: JobCmd, cfg_path: &Path) -> Result<()> {
     let mut cfg = Config::load(cfg_path)?;
     match cmd {
@@ -219,17 +302,36 @@ fn cmd_job(cmd: JobCmd, cfg_path: &Path) -> Result<()> {
             }
             let source = std::fs::canonicalize(&a.source)
                 .with_context(|| format!("Không thấy thư mục nguồn {}", a.source.display()))?;
-            let target_id = match Uuid::parse_str(&a.target) {
-                Ok(id) => id,
-                Err(_) => {
-                    read_marker(Path::new(&a.target))
-                        .with_context(|| {
-                            format!("'{}' không phải UUID, cũng chưa được init-target", a.target)
-                        })?
-                        .id
+
+            let mut password = None;
+            let destination = match (&a.target, &a.ftp) {
+                (Some(t), None) => {
+                    let target_id = match Uuid::parse_str(t) {
+                        Ok(id) => id,
+                        Err(_) => {
+                            read_marker(Path::new(t))
+                                .with_context(|| format!("'{t}' không phải UUID, cũng chưa được init-target"))?
+                                .id
+                        }
+                    };
+                    Destination::Usb { target_id }
                 }
+                (None, Some(url)) => {
+                    let (mut ftp, url_pw) = parse_ftp_url(url)?;
+                    ftp.accept_invalid_certs = a.insecure;
+                    if url_pw.is_some() {
+                        eprintln!("! Không nên để mật khẩu trong URL (lộ trong lịch sử shell)");
+                    }
+                    password = Some(match a.password.clone().or(url_pw) {
+                        Some(p) => p,
+                        None => ask_password(&format!("Mật khẩu FTP cho {}: ", ftp.url()))?,
+                    });
+                    Destination::Ftp(ftp)
+                }
+                _ => bail!("Chọn một đích: --target (USB) hoặc --ftp"),
             };
-            let mut job = Job::new(a.name, source, target_id);
+
+            let mut job = Job::new(a.name, source, destination);
             job.dest_subdir = a.subdir;
             job.excludes = a.exclude;
             job.mirror_deletes = a.mirror;
@@ -237,24 +339,49 @@ fn cmd_job(cmd: JobCmd, cfg_path: &Path) -> Result<()> {
             job.keep_versions_days = (a.keep_days > 0).then_some(a.keep_days);
             job.verify_hash = a.hash;
             job.auto_run = !a.no_auto;
-            println!("Đã thêm job '{}' ({})", job.name, job.id);
+            if a.every.is_some() {
+                job.interval_minutes = a.every.filter(|m| *m > 0);
+            }
+
+            if let Some(pw) = password {
+                if let Some(warn) = secrets::set_job_password(&mut job, &pw) {
+                    eprintln!("! {warn}");
+                }
+                match test_connection(job.destination.ftp().unwrap(), &pw) {
+                    Ok(msg) => println!("✓ {msg}"),
+                    Err(e) => eprintln!("! Chưa kết nối được ({e}). Job vẫn được lưu, sửa rồi chạy `job test`."),
+                }
+            }
+
+            println!("Đã thêm job '{}' → {}", job.name, job.destination_label());
             cfg.jobs.push(job);
             cfg.save(cfg_path)?;
             println!("Config: {}", cfg_path.display());
         }
         JobCmd::List => {
             if cfg.jobs.is_empty() {
-                println!("Chưa có job. Thêm: usb-backup job add --name ... --source ... --target ...");
+                println!("Chưa có job. Thêm: aio-backup job add --name ... --source ... --target <ổ USB> | --ftp ftp://user@host/dir");
             }
             for j in &cfg.jobs {
-                let present = locate_target(j).is_ok();
+                let status = match &j.destination {
+                    Destination::Usb { .. } => {
+                        if locate_target(j).is_ok() {
+                            "● đang cắm"
+                        } else {
+                            "○ chưa cắm"
+                        }
+                    }
+                    Destination::Ftp(_) => "◆ FTP",
+                };
+                let every = j
+                    .interval_minutes
+                    .map(|m| format!(" · mỗi {m} phút"))
+                    .unwrap_or_default();
                 println!(
-                    "{}  {}\n    nguồn: {}\n    đích:  {} {}\n    mirror:{} versioning:{} auto:{} exclude:{:?}",
-                    if present { "●" } else { "○" },
+                    "{status}  {}\n    nguồn: {}\n    đích:  {}{every}\n    mirror:{} versioning:{} auto:{} exclude:{:?}",
                     j.name,
                     j.source.display(),
-                    j.target_id,
-                    if present { "(đang cắm)" } else { "(chưa cắm)" },
+                    j.destination_label(),
                     j.mirror_deletes,
                     j.versioning,
                     j.auto_run,
@@ -264,20 +391,61 @@ fn cmd_job(cmd: JobCmd, cfg_path: &Path) -> Result<()> {
         }
         JobCmd::Remove { job } => {
             let j = cfg.remove_job(&job)?;
+            secrets::delete_password(j.id);
             cfg.save(cfg_path)?;
-            println!("Đã xoá job '{}' (dữ liệu trên USB giữ nguyên)", j.name);
+            println!("Đã xoá job '{}' (dữ liệu ở đích giữ nguyên)", j.name);
+        }
+        JobCmd::SetPassword { job } => {
+            let key = find(&cfg, &job)?.id;
+            let j = cfg.jobs.iter_mut().find(|j| j.id == key).unwrap();
+            let Some(ftp) = j.destination.ftp() else {
+                bail!("Job '{}' không dùng FTP", j.name);
+            };
+            let pw = ask_password(&format!("Mật khẩu mới cho {}: ", ftp.url()))?;
+            if let Some(warn) = secrets::set_job_password(j, &pw) {
+                eprintln!("! {warn}");
+            }
+            cfg.save(cfg_path)?;
+            println!("Đã lưu mật khẩu");
+        }
+        JobCmd::Test { job } => {
+            let j = find(&cfg, &job)?;
+            let Some(ftp) = j.destination.ftp() else {
+                println!(
+                    "{}",
+                    match locate_target(&j) {
+                        Ok(p) => format!("✓ Ổ đích đang cắm tại {}", p.display()),
+                        Err(e) => format!("✗ {e}"),
+                    }
+                );
+                return Ok(());
+            };
+            let pw = secrets::load_password(&j).context("Chưa có mật khẩu, chạy `job set-password`")?;
+            println!("✓ {}", test_connection(ftp, &pw)?);
         }
     }
     Ok(())
 }
 
-fn run_one(job: &Job, root: &Path, dry_run: bool, cancel: &AtomicBool) -> Result<Report> {
-    let dst = dest_dir(job, root);
+fn run_one(job: &Job, dry_run: bool, cancel: &AtomicBool) -> Result<Report> {
+    let mut storage = open_storage(job)?;
+    run_with(job, storage.as_mut(), dry_run, cancel)
+}
+
+fn run_usb_at(job: &Job, root: &Path, dry_run: bool, cancel: &AtomicBool) -> Result<Report> {
+    if job.destination.ftp().is_some() {
+        bail!("--target-path chỉ dùng cho job USB");
+    }
+    let mut storage = backup_core::storage::LocalStorage::new(backup_core::job::dest_dir(job, root));
+    run_with(job, &mut storage, dry_run, cancel)
+}
+
+fn run_with(job: &Job, storage: &mut dyn Storage, dry_run: bool, cancel: &AtomicBool) -> Result<Report> {
     println!(
         "▶ {}: {} → {}{}",
         job.name,
         job.source.display(),
-        dst.display(),
+        storage.describe(),
         if dry_run { "  (dry-run)" } else { "" }
     );
 
@@ -287,9 +455,9 @@ fn run_one(job: &Job, root: &Path, dry_run: bool, cancel: &AtomicBool) -> Result
             .unwrap()
             .progress_chars("█▉▊▋▌▍▎▏ "),
     );
-    let report = run_job_at(
+    let report = run_job_on(
         job,
-        root,
+        storage,
         dry_run,
         &mut |p| match p {
             Progress::Started { total_bytes, .. } => {
@@ -326,10 +494,13 @@ fn run_one(job: &Job, root: &Path, dry_run: bool, cancel: &AtomicBool) -> Result
         println!("  ✗ {}: {}", f.rel, f.error);
     }
     if report.target_lost {
-        println!("  ✗ Ổ đích bị ngắt kết nối giữa chừng");
+        println!("  ✗ Mất kết nối tới đích giữa chừng");
     }
     if report.cancelled {
         println!("  Đã huỷ");
+    }
+    for w in report.warnings.iter().filter(|w| w.starts_with("Đã dọn")) {
+        println!("  {w}");
     }
     if let Err(e) = history::append(&history::default_history_path(), job.id, &job.name, &report) {
         eprintln!("  (không ghi được lịch sử: {e})");
@@ -338,27 +509,47 @@ fn run_one(job: &Job, root: &Path, dry_run: bool, cancel: &AtomicBool) -> Result
 }
 
 fn cmd_watch(cfg_path: &Path, cancel: &AtomicBool) -> Result<()> {
-    let mut present: HashSet<Uuid> = HashSet::new();
-    println!("Đang theo dõi ổ USB... (Ctrl+C để thoát)");
+    let mut scheduler = Scheduler::new(history::last_runs(&history::default_history_path()));
+    println!("Đang theo dõi... cắm USB đích để backup, job có lịch chạy định kỳ (Ctrl+C để thoát)");
     while !cancel.load(Ordering::Relaxed) {
         // Đọc lại config mỗi vòng để nhận job mới mà không cần restart
         let cfg = Config::load(cfg_path)?;
-        let now: HashSet<Uuid> = list_drives()
+        let present: HashSet<Uuid> = list_drives()
             .into_iter()
             .filter_map(|d| d.marker.map(|m| m.id))
             .collect();
 
-        for id in now.difference(&present) {
-            for job in cfg.jobs.iter().filter(|j| j.target_id == *id && j.auto_run) {
-                if let Ok(root) = locate_target(job) {
-                    if let Err(e) = run_one(job, &root, false, cancel) {
-                        eprintln!("  ✗ {}: {e}", job.name);
-                    }
-                }
+        for due in scheduler.tick(&cfg.jobs, &present, chrono::Utc::now()) {
+            let why = match due.trigger {
+                Trigger::Plugged => "ổ đích vừa cắm",
+                Trigger::Interval => "tới lịch",
+            };
+            println!("[{}] {why}", chrono::Local::now().format("%H:%M:%S"));
+            if let Err(e) = run_one(&due.job, false, cancel) {
+                eprintln!("  ✗ {}: {e:#}", due.job.name);
             }
         }
-        present = now;
         std::thread::sleep(Duration::from_secs(cfg.poll_interval_secs.max(1)));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_ftp_url;
+
+    #[test]
+    fn ftp_url() {
+        let (t, p) = parse_ftp_url("ftps://backup@192.168.1.10:2121/volume1/backup/").unwrap();
+        assert!(t.secure);
+        assert_eq!((t.host.as_str(), t.port, t.username.as_str()), ("192.168.1.10", 2121, "backup"));
+        assert_eq!(t.remote_dir, "/volume1/backup");
+        assert!(p.is_none());
+
+        let (t, p) = parse_ftp_url("ftp://u:s3cr3t@nas.local").unwrap();
+        assert_eq!((t.port, t.remote_dir.as_str(), p.as_deref()), (21, "", Some("s3cr3t")));
+
+        assert!(parse_ftp_url("sftp://u@h").is_err());
+        assert!(parse_ftp_url("ftp://host-only").is_err());
+    }
 }

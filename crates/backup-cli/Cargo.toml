@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "usb-backup"
+name = "aio-backup"
 path = "src/main.rs"
 
 [dependencies]
@@ -18,3 +18,5 @@ tracing-subscriber.workspace = true
 clap = { version = "4", features = ["derive"] }
 indicatif = "0.17"
 ctrlc = "3"
+rpassword = "7.5.4"
+chrono.workspace = true

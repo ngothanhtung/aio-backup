@@ -8,7 +8,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use walkdir::WalkDir;
 
 use crate::error::{BackupError, Result};
-use crate::{MARKER_FILE, TMP_SUFFIX, VERSIONS_DIR};
+use crate::{MANIFEST_FILE, MARKER_FILE, TMP_SUFFIX, VERSIONS_DIR};
 
 #[derive(Debug, Clone)]
 pub struct FileEntry {
@@ -79,7 +79,7 @@ fn to_slash(p: &Path) -> String {
 fn is_internal(rel: &Path) -> bool {
     let mut comps = rel.components();
     let first = comps.next().map(|c| c.as_os_str().to_string_lossy().into_owned());
-    if matches!(first.as_deref(), Some(VERSIONS_DIR) | Some(MARKER_FILE)) {
+    if matches!(first.as_deref(), Some(VERSIONS_DIR) | Some(MARKER_FILE) | Some(MANIFEST_FILE)) {
         return true;
     }
     rel.to_string_lossy().ends_with(TMP_SUFFIX)

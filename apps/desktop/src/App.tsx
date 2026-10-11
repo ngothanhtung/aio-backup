@@ -6,11 +6,14 @@ import {
   api,
   bytes,
   errText,
+  emptyFtp,
+  ftpUrl,
   newJob,
   type Config,
   type DriveInfo,
   type FinishedEvent,
   type HistoryEntry,
+  type FtpTarget,
   type Job,
   type ProgressEvent,
   type Report,
@@ -121,8 +124,8 @@ export default function App() {
     <div className="app">
       <header>
         <div>
-          <h1>USB Backup</h1>
-          <p className="muted">Cắm ổ đích là tự backup · đóng cửa sổ app vẫn chạy dưới khay hệ thống</p>
+          <h1>AIO Backup</h1>
+          <p className="muted">Backup sang ổ USB hoặc FTP/FTPS · đóng cửa sổ app vẫn chạy dưới khay hệ thống</p>
         </div>
         <label className="switch">
           <input type="checkbox" checked={autostart} onChange={toggleAutostart} />
@@ -134,21 +137,16 @@ export default function App() {
         <section>
           <div className="section-head">
             <h2>Job backup</h2>
-            <button
-              className="primary"
-              disabled={targets.length === 0}
-              title={targets.length === 0 ? "Cần đánh dấu một ổ đích trước" : ""}
-              onClick={() => setEditing(newJob(targets[0]?.marker!.id ?? ""))}
-            >
+            <button className="primary" onClick={() => setEditing(newJob(targets[0]?.marker?.id))}>
               + Thêm job
             </button>
           </div>
 
           {config.jobs.length === 0 && (
             <div className="empty">
-              {targets.length === 0
-                ? "Bước 1: cắm ổ USB và bấm “Đánh dấu làm ổ đích” ở cột bên phải."
-                : "Bước 2: thêm job chọn thư mục cần backup."}
+              Backup sang ổ USB: cắm ổ và bấm “Đánh dấu làm ổ đích” ở cột bên phải.
+              <br />
+              Backup qua FTP/FTPS (NAS, hosting): bấm “+ Thêm job” và chọn FTP.
             </div>
           )}
 
@@ -156,7 +154,9 @@ export default function App() {
             <JobCard
               key={job.id}
               job={job}
-              drive={presentTargets.get(job.target_id)}
+              drive={
+                job.destination.kind === "usb" ? presentTargets.get(job.destination.target_id) : undefined
+              }
               run={running[job.id]}
               result={results[job.id]}
               onRun={(dry) => run(job, dry)}
@@ -185,10 +185,12 @@ export default function App() {
           job={editing}
           targets={targets}
           onCancel={() => setEditing(null)}
-          onSave={async (job) => {
+          onSave={async (job, password) => {
             try {
-              setConfig(await api.saveJob(job));
+              const res = await api.saveJob(job, password);
+              setConfig(res.config);
               setEditing(null);
+              if (res.warning) flash(res.warning);
             } catch (e) {
               flash(errText(e));
             }
@@ -220,6 +222,8 @@ function JobCard(props: {
   onDelete: () => void;
 }) {
   const { job, drive, run, result } = props;
+  const dest = job.destination;
+  const ready = dest.kind === "ftp" || !!drive;
   const pct = run && run.totalBytes > 0 ? Math.round((run.doneBytes / run.totalBytes) * 100) : 0;
 
   return (
@@ -227,16 +231,22 @@ function JobCard(props: {
       <div className="card-head">
         <div>
           <h3>
-            <span className={`dot ${drive ? "on" : ""}`} />
+            <span className={`dot ${dest.kind === "ftp" ? "ftp" : drive ? "on" : ""}`} />
             {job.name}
           </h3>
           <p className="path">{job.source}</p>
           <p className="muted small">
-            → {drive ? `${drive.marker!.label} (${drive.mount_point})` : "Ổ đích chưa cắm"}
+            →{" "}
+            {dest.kind === "ftp"
+              ? ftpUrl(dest)
+              : drive
+                ? `${drive.marker!.label} (${drive.mount_point})`
+                : "Ổ USB đích chưa cắm"}
+            {job.interval_minutes ? ` · mỗi ${job.interval_minutes} phút` : ""}
             {" · "}
             {job.mirror_deletes ? "mirror" : "chỉ thêm/cập nhật"}
             {job.versioning ? " · có versioning" : ""}
-            {job.auto_run ? " · tự chạy" : ""}
+            {dest.kind === "usb" && job.auto_run ? " · tự chạy khi cắm" : ""}
           </p>
         </div>
         <div className="actions">
@@ -244,10 +254,10 @@ function JobCard(props: {
             <button onClick={props.onCancel}>Huỷ</button>
           ) : (
             <>
-              <button disabled={!drive} onClick={() => props.onRun(true)}>
+              <button disabled={!ready} onClick={() => props.onRun(true)}>
                 Xem trước
               </button>
-              <button className="primary" disabled={!drive} onClick={() => props.onRun(false)}>
+              <button className="primary" disabled={!ready} onClick={() => props.onRun(false)}>
                 Chạy
               </button>
               <button className="ghost" onClick={props.onEdit}>
@@ -323,7 +333,7 @@ function DriveList(props: {
 
   const mark = async (d: DriveInfo) => {
     try {
-      await api.markTarget(d.mount_point, label.trim() || d.name || "USB Backup");
+      await api.markTarget(d.mount_point, label.trim() || d.name || "Ổ backup");
       setLabeling(null);
       props.onMarked();
     } catch (e) {
@@ -391,11 +401,38 @@ function JobForm(props: {
   job: Job;
   targets: DriveInfo[];
   onCancel: () => void;
-  onSave: (job: Job) => void;
+  onSave: (job: Job, password: string) => void;
 }) {
+  const isNew = !props.job.name;
   const [job, setJob] = useState<Job>(props.job);
   const [excludes, setExcludes] = useState(props.job.excludes.join("\n"));
+  const [password, setPassword] = useState("");
+  const [testing, setTesting] = useState(false);
+  const [testMsg, setTestMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const set = <K extends keyof Job>(k: K, v: Job[K]) => setJob((j) => ({ ...j, [k]: v }));
+
+  const dest = job.destination;
+  const ftp: FtpTarget | null = dest.kind === "ftp" ? dest : null;
+  const setFtp = (patch: Partial<FtpTarget>) => {
+    setTestMsg(null);
+    setJob((j) =>
+      j.destination.kind === "ftp" ? { ...j, destination: { ...j.destination, ...patch } } : j,
+    );
+  };
+
+  const switchKind = (kind: "usb" | "ftp") => {
+    if (kind === dest.kind) return;
+    setTestMsg(null);
+    setJob((j) => ({
+      ...j,
+      destination:
+        kind === "usb"
+          ? { kind: "usb", target_id: props.targets[0]?.marker?.id ?? "" }
+          : { kind: "ftp", ...emptyFtp() },
+      // FTP không có sự kiện cắm ổ -> mặc định chạy mỗi giờ
+      interval_minutes: kind === "ftp" ? (j.interval_minutes ?? 60) : null,
+    }));
+  };
 
   const pickSource = async () => {
     const dir = await open({ directory: true, multiple: false, title: "Chọn thư mục cần backup" });
@@ -408,19 +445,39 @@ function JobForm(props: {
     }
   };
 
+  const testConnection = async () => {
+    if (!ftp) return;
+    setTesting(true);
+    setTestMsg(null);
+    try {
+      const msg = await api.testFtp(ftp, password, isNew ? undefined : job.id);
+      setTestMsg({ ok: true, text: msg });
+    } catch (e) {
+      setTestMsg({ ok: false, text: errText(e) });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const destValid =
+    dest.kind === "usb" ? !!dest.target_id : !!(dest.host && dest.username && (password || !isNew));
+
   const submit = () =>
-    props.onSave({
-      ...job,
-      excludes: excludes
-        .split("\n")
-        .map((s) => s.trim())
-        .filter(Boolean),
-    });
+    props.onSave(
+      {
+        ...job,
+        excludes: excludes
+          .split("\n")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      },
+      password,
+    );
 
   return (
     <div className="modal-backdrop" onClick={props.onCancel}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>{props.job.name ? "Sửa job" : "Job mới"}</h2>
+        <h2>{isNew ? "Job mới" : "Sửa job"}</h2>
 
         <label>
           Thư mục nguồn
@@ -435,22 +492,132 @@ function JobForm(props: {
           <input value={job.name} onChange={(e) => set("name", e.target.value)} />
         </label>
 
-        <label>
-          Ổ đích
-          <select value={job.target_id} onChange={(e) => set("target_id", e.target.value)}>
-            {!props.targets.some((t) => t.marker!.id === job.target_id) && (
-              <option value={job.target_id}>(ổ hiện chưa cắm)</option>
+        <div className="field">
+          <span className="field-label">Backup tới</span>
+          <div className="segmented">
+            <button className={dest.kind === "usb" ? "active" : ""} onClick={() => switchKind("usb")}>
+              Ổ USB
+            </button>
+            <button className={dest.kind === "ftp" ? "active" : ""} onClick={() => switchKind("ftp")}>
+              FTP / FTPS
+            </button>
+          </div>
+        </div>
+
+        {dest.kind === "usb" && (
+          <label>
+            Ổ đích
+            {props.targets.length === 0 && !dest.target_id ? (
+              <p className="muted small hint">
+                Chưa có ổ đích. Cắm ổ USB rồi bấm “Đánh dấu làm ổ đích” ở cột bên phải.
+              </p>
+            ) : (
+              <select
+                value={dest.target_id}
+                onChange={(e) => set("destination", { kind: "usb", target_id: e.target.value })}
+              >
+                {!props.targets.some((t) => t.marker!.id === dest.target_id) && (
+                  <option value={dest.target_id}>(ổ hiện chưa cắm)</option>
+                )}
+                {props.targets.map((t) => (
+                  <option key={t.marker!.id} value={t.marker!.id}>
+                    {t.marker!.label} — {t.mount_point}
+                  </option>
+                ))}
+              </select>
             )}
-            {props.targets.map((t) => (
-              <option key={t.marker!.id} value={t.marker!.id}>
-                {t.marker!.label} — {t.mount_point}
-              </option>
-            ))}
-          </select>
-        </label>
+          </label>
+        )}
+
+        {ftp && (
+          <div className="ftp-box">
+            <div className="grid-2">
+              <label>
+                Máy chủ
+                <input
+                  placeholder="192.168.1.10 hoặc nas.example.com"
+                  value={ftp.host}
+                  onChange={(e) => setFtp({ host: e.target.value.trim() })}
+                />
+              </label>
+              <label>
+                Cổng
+                <input
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={ftp.port}
+                  onChange={(e) => setFtp({ port: Number(e.target.value) || 21 })}
+                />
+              </label>
+            </div>
+            <div className="grid-2">
+              <label>
+                Tên đăng nhập
+                <input
+                  autoComplete="off"
+                  value={ftp.username}
+                  onChange={(e) => setFtp({ username: e.target.value })}
+                />
+              </label>
+              <label>
+                Mật khẩu
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder={isNew ? "" : "Để trống = giữ mật khẩu cũ"}
+                  value={password}
+                  onChange={(e) => {
+                    setPassword(e.target.value);
+                    setTestMsg(null);
+                  }}
+                />
+              </label>
+            </div>
+            <label>
+              Thư mục trên server
+              <input
+                placeholder="/backup"
+                value={ftp.remote_dir}
+                onChange={(e) => setFtp({ remote_dir: e.target.value })}
+              />
+            </label>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={ftp.secure}
+                onChange={(e) =>
+                  setFtp({ secure: e.target.checked, accept_invalid_certs: e.target.checked && ftp.accept_invalid_certs })
+                }
+              />
+              Mã hoá FTPS (khuyên dùng)
+            </label>
+            {ftp.secure && (
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={ftp.accept_invalid_certs}
+                  onChange={(e) => setFtp({ accept_invalid_certs: e.target.checked })}
+                />
+                Chấp nhận chứng chỉ tự ký (chỉ dùng cho NAS trong mạng nội bộ)
+              </label>
+            )}
+            {!ftp.secure && (
+              <p className="muted small hint warn">
+                FTP thường gửi mật khẩu và dữ liệu không mã hoá. Chỉ nên dùng trong mạng nội bộ.
+              </p>
+            )}
+            <div className="row center">
+              <button disabled={!ftp.host || !ftp.username || testing} onClick={testConnection}>
+                {testing ? "Đang kiểm tra…" : "Kiểm tra kết nối"}
+              </button>
+              {testMsg && <span className={`small ${testMsg.ok ? "good" : "bad"}`}>{testMsg.text}</span>}
+            </div>
+          </div>
+        )}
 
         <label>
-          Thư mục con trên ổ đích <span className="muted">(để trống = dùng tên job)</span>
+          Thư mục con ở đích <span className="muted">(để trống = dùng tên job)</span>
           <input value={job.dest_subdir} onChange={(e) => set("dest_subdir", e.target.value)} />
         </label>
 
@@ -460,13 +627,29 @@ function JobForm(props: {
         </label>
 
         <div className="checks">
+          {dest.kind === "usb" && (
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={job.auto_run}
+                onChange={(e) => set("auto_run", e.target.checked)}
+              />
+              Tự chạy khi cắm ổ đích
+            </label>
+          )}
           <label className="check">
+            Chạy định kỳ mỗi
             <input
-              type="checkbox"
-              checked={job.auto_run}
-              onChange={(e) => set("auto_run", e.target.checked)}
+              type="number"
+              min={0}
+              className="num"
+              value={job.interval_minutes ?? 0}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                set("interval_minutes", n > 0 ? n : null);
+              }}
             />
-            Tự chạy khi cắm ổ đích
+            phút {dest.kind === "usb" ? "khi ổ đang cắm " : ""}(0 = tắt)
           </label>
           <label className="check">
             <input
@@ -498,23 +681,25 @@ function JobForm(props: {
               checked={job.mirror_deletes}
               onChange={(e) => set("mirror_deletes", e.target.checked)}
             />
-            Mirror: xoá ở USB file đã xoá ở nguồn
+            Mirror: xoá ở đích file đã xoá ở nguồn
           </label>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={job.verify_hash}
-              onChange={(e) => set("verify_hash", e.target.checked)}
-            />
-            So nội dung (blake3) khi chỉ khác thời gian sửa
-          </label>
+          {dest.kind === "usb" && (
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={job.verify_hash}
+                onChange={(e) => set("verify_hash", e.target.checked)}
+              />
+              So nội dung (blake3) khi chỉ khác thời gian sửa
+            </label>
+          )}
         </div>
 
         <div className="modal-actions">
           <button className="ghost" onClick={props.onCancel}>
             Huỷ
           </button>
-          <button className="primary" disabled={!job.source || !job.name} onClick={submit}>
+          <button className="primary" disabled={!job.source || !job.name || !destValid} onClick={submit}>
             Lưu
           </button>
         </div>

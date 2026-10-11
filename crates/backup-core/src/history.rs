@@ -23,7 +23,7 @@ pub struct HistoryEntry {
 pub fn default_history_path() -> PathBuf {
     project_dirs()
         .map(|d| d.data_dir().join("history.jsonl"))
-        .unwrap_or_else(|| PathBuf::from("usb-backup-history.jsonl"))
+        .unwrap_or_else(|| PathBuf::from("aio-backup-history.jsonl"))
 }
 
 pub fn append(path: &Path, job_id: Uuid, job_name: &str, report: &Report) -> Result<()> {
@@ -42,6 +42,25 @@ pub fn append(path: &Path, job_id: Uuid, job_name: &str, report: &Report) -> Res
         .open(path)
         .at(path)?;
     writeln!(f, "{line}").at(path)
+}
+
+/// Thời điểm chạy thật (không tính dry-run) gần nhất của từng job.
+pub fn last_runs(path: &Path) -> std::collections::HashMap<Uuid, chrono::DateTime<chrono::Utc>> {
+    let mut out = std::collections::HashMap::new();
+    // recent() trả mới nhất trước -> giữ giá trị đầu tiên gặp
+    for e in recent(path, usize::MAX) {
+        if e.report["dryRun"].as_bool() == Some(true) {
+            continue;
+        }
+        let at = e.report["startedAt"]
+            .as_str()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|d| d.with_timezone(&chrono::Utc));
+        if let Some(at) = at {
+            out.entry(e.job_id).or_insert(at);
+        }
+    }
+    out
 }
 
 /// `limit` lượt gần nhất, mới nhất trước.

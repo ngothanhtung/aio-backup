@@ -9,6 +9,7 @@ use serde::Serialize;
 use crate::error::Result;
 use crate::names::path_problem;
 use crate::scan::{scan, FileEntry, Filter};
+use crate::storage::{LocalStorage, Storage};
 use crate::MTIME_TOLERANCE_SECS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -56,7 +57,13 @@ pub struct PlanOptions {
     pub verify_hash: bool,
 }
 
+/// Lập plan khi đích là thư mục local.
 pub fn build_plan(src: &Path, dst: &Path, opts: &PlanOptions) -> Result<Plan> {
+    build_plan_for(src, &mut LocalStorage::new(dst), opts)
+}
+
+/// Lập plan cho một đích bất kỳ.
+pub fn build_plan_for(src: &Path, storage: &mut dyn Storage, opts: &PlanOptions) -> Result<Plan> {
     if !src.is_dir() {
         return Err(crate::BackupError::SourceMissing(src.to_path_buf()));
     }
@@ -64,7 +71,7 @@ pub fn build_plan(src: &Path, dst: &Path, opts: &PlanOptions) -> Result<Plan> {
     let s = scan(src, &filter)?;
     // Áp cùng bộ lọc cho đích: file bị exclude không bao giờ bị đụng tới,
     // kể cả khi bật mirror_deletes.
-    let d = scan(dst, &filter)?;
+    let d = storage.index(&filter)?;
 
     let mut plan = Plan {
         warnings: s.warnings,
@@ -81,9 +88,12 @@ pub fn build_plan(src: &Path, dst: &Path, opts: &PlanOptions) -> Result<Plan> {
             None => Some(ActionKind::Create),
             Some(de) if same(se, de) => None,
             Some(de) if opts.verify_hash && se.size == de.size => {
-                match (hash(&src.join(rel)), hash(&dst.join(rel))) {
-                    (Ok(a), Ok(b)) if a == b => None,
-                    _ => Some(ActionKind::Update),
+                match storage.local_path(rel) {
+                    Some(dp) => match (hash(&src.join(rel)), hash(&dp)) {
+                        (Ok(a), Ok(b)) if a == b => None,
+                        _ => Some(ActionKind::Update),
+                    },
+                    None => Some(ActionKind::Update),
                 }
             }
             Some(_) => Some(ActionKind::Update),

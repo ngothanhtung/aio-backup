@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "USB Backup",
+  "productName": "AIO Backup",
   "version": "0.1.0",
-  "identifier": "vn.softech.usb-backup",
+  "identifier": "vn.softech.aio-backup",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "USB Backup",
+        "title": "AIO Backup",
         "width": 980,
         "height": 720,
         "minWidth": 720,

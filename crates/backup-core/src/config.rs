@@ -1,7 +1,7 @@
 //! Cấu hình job, lưu dạng TOML trong thư mục config chuẩn của từng OS:
-//! - Windows: %APPDATA%\Softech\usb-backup\config\config.toml
-//! - macOS:   ~/Library/Application Support/vn.Softech.usb-backup/config.toml
-//! - Linux:   ~/.config/usb-backup/config.toml
+//! - Windows: %APPDATA%\Softech\aio-backup\config\config.toml
+//! - macOS:   ~/Library/Application Support/vn.Softech.aio-backup/config.toml
+//! - Linux:   ~/.config/aio-backup/config.toml
 
 use std::path::{Path, PathBuf};
 
@@ -18,15 +18,76 @@ fn default_poll() -> u64 {
     5
 }
 
+fn default_ftp_port() -> u16 {
+    21
+}
+
+/// Nơi lưu bản backup.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Destination {
+    /// Ổ USB/ổ ngoài, nhận diện qua UUID trong file `.backup-id`.
+    Usb { target_id: Uuid },
+    /// Máy chủ FTP/FTPS (NAS Synology, hosting...).
+    Ftp(FtpTarget),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FtpTarget {
+    pub host: String,
+    #[serde(default = "default_ftp_port")]
+    pub port: u16,
+    pub username: String,
+    /// Thư mục gốc trên server, vd `/backup`. Rỗng = thư mục home của user.
+    #[serde(default)]
+    pub remote_dir: String,
+    /// FTPS explicit (AUTH TLS). Nên bật nếu server hỗ trợ.
+    #[serde(default)]
+    pub secure: bool,
+    /// Chấp nhận chứng chỉ tự ký (NAS trong mạng LAN). Không dùng qua Internet.
+    #[serde(default)]
+    pub accept_invalid_certs: bool,
+    /// Chỉ dùng khi OS không có keychain (Linux headless). Bình thường mật khẩu
+    /// nằm trong Credential Manager / Keychain / Secret Service, không ở đây.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+}
+
+impl FtpTarget {
+    pub fn url(&self) -> String {
+        let scheme = if self.secure { "ftps" } else { "ftp" };
+        let dir = self.remote_dir.trim_matches('/');
+        if dir.is_empty() {
+            format!("{scheme}://{}@{}:{}", self.username, self.host, self.port)
+        } else {
+            format!("{scheme}://{}@{}:{}/{dir}", self.username, self.host, self.port)
+        }
+    }
+}
+
+impl Destination {
+    pub fn usb_id(&self) -> Option<Uuid> {
+        match self {
+            Destination::Usb { target_id } => Some(*target_id),
+            Destination::Ftp(_) => None,
+        }
+    }
+    pub fn ftp(&self) -> Option<&FtpTarget> {
+        match self {
+            Destination::Ftp(f) => Some(f),
+            Destination::Usb { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Job {
     pub id: Uuid,
     pub name: String,
     /// Thư mục nguồn trên HDD/SSD.
     pub source: PathBuf,
-    /// UUID trong file `.backup-id` của ổ USB đích.
-    pub target_id: Uuid,
-    /// Thư mục con trên ổ đích; rỗng = dùng tên job.
+    pub destination: Destination,
+    /// Thư mục con ở đích; rỗng = dùng tên job.
     #[serde(default)]
     pub dest_subdir: String,
     #[serde(default)]
@@ -40,18 +101,22 @@ pub struct Job {
     pub keep_versions_days: Option<u32>,
     #[serde(default)]
     pub verify_hash: bool,
-    /// Tự chạy khi phát hiện ổ đích được cắm vào.
+    /// USB: tự chạy khi phát hiện ổ đích được cắm vào.
     #[serde(default = "yes")]
     pub auto_run: bool,
+    /// Chạy định kỳ mỗi N phút (FTP; với USB thì chỉ khi ổ đang cắm).
+    #[serde(default)]
+    pub interval_minutes: Option<u32>,
 }
 
 impl Job {
-    pub fn new(name: impl Into<String>, source: impl Into<PathBuf>, target_id: Uuid) -> Self {
+    pub fn new(name: impl Into<String>, source: impl Into<PathBuf>, destination: Destination) -> Self {
+        let is_ftp = matches!(destination, Destination::Ftp(_));
         Self {
             id: Uuid::new_v4(),
             name: name.into(),
             source: source.into(),
-            target_id,
+            destination,
             dest_subdir: String::new(),
             excludes: vec![],
             mirror_deletes: false,
@@ -59,6 +124,20 @@ impl Job {
             keep_versions_days: Some(30),
             verify_hash: false,
             auto_run: true,
+            // FTP không có sự kiện "cắm vào" nên mặc định chạy mỗi giờ
+            interval_minutes: is_ftp.then_some(60),
+        }
+    }
+
+    pub fn usb(name: impl Into<String>, source: impl Into<PathBuf>, target_id: Uuid) -> Self {
+        Self::new(name, source, Destination::Usb { target_id })
+    }
+
+    /// Mô tả đích để hiển thị.
+    pub fn destination_label(&self) -> String {
+        match &self.destination {
+            Destination::Usb { target_id } => format!("USB {target_id}"),
+            Destination::Ftp(f) => f.url(),
         }
     }
 }
@@ -81,13 +160,13 @@ impl Default for Config {
 }
 
 pub fn project_dirs() -> Option<ProjectDirs> {
-    ProjectDirs::from("vn", "Softech", "usb-backup")
+    ProjectDirs::from("vn", "Softech", "aio-backup")
 }
 
 pub fn default_config_path() -> PathBuf {
     project_dirs()
         .map(|d| d.config_dir().join("config.toml"))
-        .unwrap_or_else(|| PathBuf::from("usb-backup.toml"))
+        .unwrap_or_else(|| PathBuf::from("aio-backup.toml"))
 }
 
 impl Config {
@@ -143,7 +222,20 @@ mod tests {
         assert_eq!(Config::load(&p).unwrap(), Config::default());
 
         let mut c = Config::default();
-        c.jobs.push(Job::new("Tai lieu", "/home/a/Documents", Uuid::new_v4()));
+        c.jobs.push(Job::usb("Tai lieu", "/home/a/Documents", Uuid::new_v4()));
+        c.jobs.push(Job::new(
+            "NAS",
+            "/home/a/Pictures",
+            Destination::Ftp(FtpTarget {
+                host: "192.168.1.10".into(),
+                port: 21,
+                username: "backup".into(),
+                remote_dir: "/backup".into(),
+                secure: true,
+                accept_invalid_certs: true,
+                password: None,
+            }),
+        ));
         c.save(&p).unwrap();
         let back = Config::load(&p).unwrap();
         assert_eq!(back, c);

@@ -1,5 +1,5 @@
 {
-  "name": "usb-backup-desktop",
+  "name": "aio-backup-desktop",
   "private": true,
   "version": "0.1.0",
   "type": "module",

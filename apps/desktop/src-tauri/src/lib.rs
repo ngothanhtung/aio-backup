@@ -1,6 +1,6 @@
-//! App desktop: lớp mỏng bọc backup-core.
-//! - Command cho UI (config, ổ đĩa, chạy/huỷ job, lịch sử)
-//! - Thread watcher: poll ổ đĩa, cắm USB có marker -> tự chạy job auto_run
+//! App desktop AIO Backup: lớp mỏng bọc backup-core.
+//! - Command cho UI (config, ổ đĩa, job, mật khẩu FTP, chạy/huỷ, lịch sử)
+//! - Thread watcher: cắm USB đích -> chạy job auto_run; job có lịch -> chạy định kỳ
 //! - Tray icon: đóng cửa sổ chỉ ẩn xuống tray, app vẫn chạy nền
 
 use std::collections::{HashMap, HashSet};
@@ -9,12 +9,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use backup_core::config::{default_config_path, Config, Job};
+use backup_core::config::{default_config_path, Config, Destination, FtpTarget, Job};
 use backup_core::drives::{list_drives, DriveInfo};
 use backup_core::engine::{Progress, Report};
 use backup_core::history::{self, HistoryEntry};
-use backup_core::job::{locate_target, run_job_at};
+use backup_core::job::{locate_target, open_storage, run_job_on};
 use backup_core::marker::{init_target, TargetMarker};
+use backup_core::schedule::{Scheduler, Trigger};
+use backup_core::secrets;
+use backup_core::storage::ftp::test_connection;
 use serde::Serialize;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -28,6 +31,7 @@ struct AppState {
     config: Mutex<Config>,
     /// job_id -> cờ huỷ của lượt đang chạy
     running: Mutex<HashMap<Uuid, Arc<AtomicBool>>>,
+    scheduler: Mutex<Scheduler>,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -48,11 +52,28 @@ struct FinishedEvent {
     error: Option<String>,
 }
 
+#[derive(Serialize)]
+struct SaveResult {
+    config: Config,
+    warning: Option<String>,
+}
+
+/// Bản config gửi lên UI: không bao giờ kèm mật khẩu.
+fn redacted(cfg: &Config) -> Config {
+    let mut c = cfg.clone();
+    for j in &mut c.jobs {
+        if let Destination::Ftp(f) = &mut j.destination {
+            f.password = None;
+        }
+    }
+    c
+}
+
 // ---------- Commands (async để không chặn main thread) ----------
 
 #[tauri::command]
 async fn get_config(state: State<'_, AppState>) -> CmdResult<Config> {
-    Ok(state.config.lock().unwrap().clone())
+    Ok(redacted(&state.config.lock().unwrap()))
 }
 
 #[tauri::command]
@@ -65,15 +86,17 @@ async fn mark_target(path: String, label: String, force: bool) -> CmdResult<Targ
     init_target(&PathBuf::from(path), &label, force).map_err(|e| e.to_string())
 }
 
-/// Thêm mới hoặc cập nhật job (theo id).
+/// Thêm mới hoặc cập nhật job (theo id). `password` chỉ dùng cho FTP;
+/// bỏ trống khi sửa job = giữ mật khẩu cũ.
 #[tauri::command]
-async fn save_job(state: State<'_, AppState>, job: Job) -> CmdResult<Config> {
+async fn save_job(state: State<'_, AppState>, mut job: Job, password: Option<String>) -> CmdResult<SaveResult> {
     if job.name.trim().is_empty() {
         return Err("Tên job không được trống".into());
     }
     if !job.source.is_dir() {
         return Err(format!("Thư mục nguồn không tồn tại: {}", job.source.display()));
     }
+
     let mut cfg = state.config.lock().unwrap();
     if cfg
         .jobs
@@ -82,12 +105,40 @@ async fn save_job(state: State<'_, AppState>, job: Job) -> CmdResult<Config> {
     {
         return Err(format!("Đã có job tên '{}'", job.name));
     }
+
+    let mut warning = None;
+    if let Destination::Ftp(ftp) = &mut job.destination {
+        if ftp.host.trim().is_empty() || ftp.username.trim().is_empty() {
+            return Err("Nhập host và tên đăng nhập FTP".into());
+        }
+        let password = password.filter(|p| !p.is_empty());
+        // UI không gửi lại mật khẩu đã lưu trong config -> giữ bản cũ
+        if password.is_none() {
+            ftp.password = cfg
+                .jobs
+                .iter()
+                .find(|j| j.id == job.id)
+                .and_then(|j| j.destination.ftp())
+                .and_then(|f| f.password.clone());
+        }
+        match password {
+            Some(p) => warning = secrets::set_job_password(&mut job, &p),
+            None if secrets::load_password(&job).is_none() => {
+                return Err("Nhập mật khẩu FTP".into());
+            }
+            None => {}
+        }
+    }
+
     match cfg.jobs.iter_mut().find(|j| j.id == job.id) {
         Some(existing) => *existing = job,
         None => cfg.jobs.push(job),
     }
     cfg.save(&state.cfg_path).map_err(|e| e.to_string())?;
-    Ok(cfg.clone())
+    Ok(SaveResult {
+        config: redacted(&cfg),
+        warning,
+    })
 }
 
 #[tauri::command]
@@ -95,7 +146,29 @@ async fn delete_job(state: State<'_, AppState>, id: Uuid) -> CmdResult<Config> {
     let mut cfg = state.config.lock().unwrap();
     cfg.jobs.retain(|j| j.id != id);
     cfg.save(&state.cfg_path).map_err(|e| e.to_string())?;
-    Ok(cfg.clone())
+    secrets::delete_password(id);
+    Ok(redacted(&cfg))
+}
+
+/// Kiểm tra kết nối FTP từ form. Mật khẩu trống = dùng mật khẩu đã lưu của job.
+#[tauri::command]
+async fn test_ftp(
+    state: State<'_, AppState>,
+    ftp: FtpTarget,
+    password: Option<String>,
+    job_id: Option<Uuid>,
+) -> CmdResult<String> {
+    let password = match password.filter(|p| !p.is_empty()) {
+        Some(p) => p,
+        None => job_id
+            .and_then(|id| state.config.lock().unwrap().jobs.iter().find(|j| j.id == id).cloned())
+            .and_then(|j| secrets::load_password(&j))
+            .ok_or("Nhập mật khẩu để kiểm tra")?,
+    };
+    tauri::async_runtime::spawn_blocking(move || test_connection(&ftp, &password))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -109,6 +182,9 @@ async fn start_job(app: AppHandle, state: State<'_, AppState>, id: Uuid, dry_run
         .find(|j| j.id == id)
         .cloned()
         .ok_or("Job không tồn tại")?;
+    if !dry_run {
+        state.scheduler.lock().unwrap().record_run(id, chrono::Utc::now());
+    }
     spawn_job(&app, job, dry_run, false)
 }
 
@@ -134,7 +210,10 @@ async fn get_history(limit: usize) -> CmdResult<Vec<HistoryEntry>> {
 
 fn spawn_job(app: &AppHandle, job: Job, dry_run: bool, notify: bool) -> CmdResult<()> {
     let state = app.state::<AppState>();
-    let root = locate_target(&job).map_err(|e| e.to_string())?;
+    // USB chưa cắm thì báo ngay, khỏi tạo thread
+    if matches!(job.destination, Destination::Usb { .. }) {
+        locate_target(&job).map_err(|e| e.to_string())?;
+    }
 
     let cancel = Arc::new(AtomicBool::new(false));
     {
@@ -150,20 +229,23 @@ fn spawn_job(app: &AppHandle, job: Job, dry_run: bool, notify: bool) -> CmdResul
     std::thread::spawn(move || {
         let job_id = job.id;
         let mut last_emit = Instant::now() - Duration::from_secs(1);
-        let result = run_job_at(
-            &job,
-            &root,
-            dry_run,
-            &mut |p| {
-                // Giới hạn ~10 event/giây cho tiến độ từng file để UI không bị dội
-                let is_file = matches!(p, Progress::File { .. });
-                if !is_file || last_emit.elapsed() >= Duration::from_millis(100) {
-                    last_emit = Instant::now();
-                    let _ = app.emit("job-progress", ProgressEvent { job_id, progress: p });
-                }
-            },
-            &cancel,
-        );
+        // Kết nối FTP có thể mất vài giây -> làm trong thread
+        let result = open_storage(&job).and_then(|mut storage| {
+            run_job_on(
+                &job,
+                storage.as_mut(),
+                dry_run,
+                &mut |p| {
+                    // Giới hạn ~10 event/giây cho tiến độ từng file để UI không bị dội
+                    let is_file = matches!(p, Progress::File { .. });
+                    if !is_file || last_emit.elapsed() >= Duration::from_millis(100) {
+                        last_emit = Instant::now();
+                        let _ = app.emit("job-progress", ProgressEvent { job_id, progress: p });
+                    }
+                },
+                &cancel,
+            )
+        });
 
         app.state::<AppState>().running.lock().unwrap().remove(&job_id);
 
@@ -175,12 +257,14 @@ fn spawn_job(app: &AppHandle, job: Job, dry_run: bool, notify: bool) -> CmdResul
             Err(e) => (None, Some(e.to_string())),
         };
 
+        // Lượt tự động lỗi cũng báo, để người dùng biết NAS/USB có vấn đề
         if notify {
             let body = match (&report, &error) {
                 (Some(r), _) if r.ok() => format!(
                     "Xong: +{} mới, ~{} cập nhật, -{} xoá",
                     r.created, r.updated, r.deleted
                 ),
+                (Some(r), _) if r.target_lost => "Mất kết nối tới đích giữa chừng".to_string(),
                 (Some(r), _) => format!("Kết thúc với {} lỗi", r.failed.len()),
                 (None, Some(e)) => format!("Lỗi: {e}"),
                 _ => String::new(),
@@ -188,7 +272,7 @@ fn spawn_job(app: &AppHandle, job: Job, dry_run: bool, notify: bool) -> CmdResul
             let _ = app
                 .notification()
                 .builder()
-                .title(format!("Backup: {}", job.name))
+                .title(format!("AIO Backup: {}", job.name))
                 .body(body)
                 .show();
         }
@@ -206,37 +290,45 @@ fn spawn_job(app: &AppHandle, job: Job, dry_run: bool, notify: bool) -> CmdResul
     Ok(())
 }
 
-// ---------- Theo dõi cắm/rút USB ----------
+// ---------- Theo dõi USB + lịch định kỳ ----------
 
 fn watcher(app: AppHandle) {
-    let mut present: HashSet<Uuid> = HashSet::new();
     let mut last_mounts: Vec<PathBuf> = vec![];
+    let mut last_present: HashSet<Uuid> = HashSet::new();
     loop {
         let drives = list_drives();
         let mounts: Vec<PathBuf> = drives.iter().map(|d| d.mount_point.clone()).collect();
-        let now: HashSet<Uuid> = drives
+        let present: HashSet<Uuid> = drives
             .iter()
             .filter_map(|d| d.marker.as_ref().map(|m| m.id))
             .collect();
-
-        if mounts != last_mounts || now != present {
+        if mounts != last_mounts || present != last_present {
             let _ = app.emit("drives-changed", &drives);
         }
 
+        let state = app.state::<AppState>();
         let (jobs, poll) = {
-            let cfg = app.state::<AppState>().config.lock().unwrap().clone();
-            (cfg.jobs, cfg.poll_interval_secs.max(1))
+            let cfg = state.config.lock().unwrap();
+            (cfg.jobs.clone(), cfg.poll_interval_secs.max(1))
         };
-        for id in now.difference(&present) {
-            for job in jobs.iter().filter(|j| j.target_id == *id && j.auto_run) {
-                if let Err(e) = spawn_job(&app, job.clone(), false, true) {
-                    tracing::warn!("auto-run {} lỗi: {e}", job.name);
-                }
+        let due = state
+            .scheduler
+            .lock()
+            .unwrap()
+            .tick(&jobs, &present, chrono::Utc::now());
+        for d in due {
+            let why = match d.trigger {
+                Trigger::Plugged => "ổ đích vừa cắm",
+                Trigger::Interval => "tới lịch",
+            };
+            tracing::info!("chạy {} ({why})", d.job.name);
+            if let Err(e) = spawn_job(&app, d.job.clone(), false, true) {
+                tracing::warn!("auto-run {} lỗi: {e}", d.job.name);
             }
         }
 
-        present = now;
         last_mounts = mounts;
+        last_present = present;
         std::thread::sleep(Duration::from_secs(poll));
     }
 }
@@ -254,7 +346,8 @@ fn show_main(app: &AppHandle) {
 pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,suppaftp=off".into()),
         )
         .init();
 
@@ -263,6 +356,7 @@ pub fn run() {
         tracing::error!("Không đọc được config, dùng mặc định: {e}");
         Config::default()
     });
+    let scheduler = Scheduler::new(history::last_runs(&history::default_history_path()));
 
     tauri::Builder::default()
         // Phải đăng ký đầu tiên: mở app lần 2 thì chỉ hiện lại cửa sổ cũ
@@ -277,6 +371,7 @@ pub fn run() {
             cfg_path,
             config: Mutex::new(config),
             running: Mutex::new(HashMap::new()),
+            scheduler: Mutex::new(scheduler),
         })
         .invoke_handler(tauri::generate_handler![
             get_config,
@@ -284,17 +379,18 @@ pub fn run() {
             mark_target,
             save_job,
             delete_job,
+            test_ftp,
             start_job,
             cancel_job,
             running_jobs,
             get_history,
         ])
         .setup(|app| {
-            let show = MenuItem::with_id(app, "show", "Mở USB Backup", true, None::<&str>)?;
+            let show = MenuItem::with_id(app, "show", "Mở AIO Backup", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Thoát", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
             let mut tray = TrayIconBuilder::with_id("main")
-                .tooltip("USB Backup")
+                .tooltip("AIO Backup")
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => show_main(app),

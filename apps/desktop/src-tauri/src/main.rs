@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    usb_backup_desktop_lib::run()
+    aio_backup_desktop_lib::run()
 }

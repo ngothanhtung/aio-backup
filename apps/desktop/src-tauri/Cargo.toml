@@ -1,11 +1,11 @@
 [package]
-name = "usb-backup-desktop"
+name = "aio-backup-desktop"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [lib]
-name = "usb_backup_desktop_lib"
+name = "aio_backup_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -16,6 +16,7 @@ backup-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+chrono.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tauri = { version = "2", features = ["tray-icon"] }

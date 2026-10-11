@@ -7,5 +7,6 @@ export default defineConfig({
   clearScreen: false,
   server: { port: 1420, strictPort: true },
   envPrefix: ["VITE_", "TAURI_ENV_"],
-  build: { target: "es2022", outDir: "dist" },
+  // App desktop chạy local: bundle antd ~400 KB gzip không ảnh hưởng tốc độ tải
+  build: { target: "es2022", outDir: "dist", chunkSizeWarningLimit: 1600 },
 });

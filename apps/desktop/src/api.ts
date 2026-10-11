@@ -1,4 +1,4 @@
-// Kiểu dữ liệu khớp với struct Rust (serde) và wrapper gọi command.
+// Kiểu dữ liệu khớp với struct Rust (serde) và wrapper gọi command Tauri.
 import { invoke } from "@tauri-apps/api/core";
 
 export type Uuid = string;
@@ -48,6 +48,8 @@ export interface Job {
 
 export interface Config {
   poll_interval_secs: number;
+  default_excludes: string[];
+  default_keep_days: number;
   jobs: Job[];
 }
 
@@ -71,6 +73,8 @@ export interface Report {
   warnings: string[];
   cancelled: boolean;
   targetLost: boolean;
+  /** Lỗi trước khi kịp chạy (không mở được đích, sai mật khẩu...). */
+  error?: string;
 }
 
 export interface HistoryEntry {
@@ -91,6 +95,38 @@ export interface FinishedEvent {
   error: string | null;
 }
 
+export interface ScheduleInfo {
+  jobId: Uuid;
+  lastRun: string | null;
+  nextRun: string | null;
+  available: boolean;
+}
+
+export interface SnapshotInfo {
+  name: string;
+  takenAt: string | null;
+}
+
+export interface RestoreEntry {
+  path: string;
+  size: number;
+  modified: string | null;
+}
+
+export interface RestoreReport {
+  restored: number;
+  bytes: number;
+  skipped: string[];
+  failed: { rel: string; error: string }[];
+  cancelled: boolean;
+}
+
+export interface RestoreProgress {
+  done: number;
+  total: number;
+  current: string;
+}
+
 export const api = {
   getConfig: () => invoke<Config>("get_config"),
   getDrives: () => invoke<DriveInfo[]>("get_drives"),
@@ -98,13 +134,27 @@ export const api = {
     invoke<TargetMarker>("mark_target", { path, label, force }),
   saveJob: (job: Job, password?: string) =>
     invoke<{ config: Config; warning: string | null }>("save_job", { job, password: password || null }),
+  deleteJob: (id: Uuid) => invoke<Config>("delete_job", { id }),
   testFtp: (ftp: FtpTarget, password: string, jobId?: Uuid) =>
     invoke<string>("test_ftp", { ftp, password: password || null, jobId: jobId ?? null }),
-  deleteJob: (id: Uuid) => invoke<Config>("delete_job", { id }),
   startJob: (id: Uuid, dryRun: boolean) => invoke<void>("start_job", { id, dryRun }),
   cancelJob: (id: Uuid) => invoke<void>("cancel_job", { id }),
   runningJobs: () => invoke<Uuid[]>("running_jobs"),
-  getHistory: (limit = 30) => invoke<HistoryEntry[]>("get_history", { limit }),
+  getHistory: (limit = 1000) => invoke<HistoryEntry[]>("get_history", { limit }),
+  getSchedule: () => invoke<ScheduleInfo[]>("get_schedule"),
+  saveSettings: (s: { pollIntervalSecs: number; defaultExcludes: string[]; defaultKeepDays: number }) =>
+    invoke<Config>("save_settings", s),
+  listSnapshots: (jobId: Uuid) => invoke<SnapshotInfo[]>("list_snapshots", { jobId }),
+  listRestoreEntries: (jobId: Uuid, snapshot: string | null) =>
+    invoke<RestoreEntry[]>("list_restore_entries", { jobId, snapshot }),
+  restoreFiles: (args: {
+    jobId: Uuid;
+    snapshot: string | null;
+    paths: string[];
+    target: string;
+    overwrite: boolean;
+  }) => invoke<RestoreReport>("restore_files", args),
+  cancelRestore: () => invoke<void>("cancel_restore"),
 };
 
 export const emptyFtp = (): FtpTarget => ({
@@ -116,8 +166,8 @@ export const emptyFtp = (): FtpTarget => ({
   accept_invalid_certs: false,
 });
 
-/** Job mới: đích USB nếu đã có ổ đích, ngược lại FTP. */
-export function newJob(usbTargetId?: Uuid): Job {
+/** Job mới: đích USB nếu đã có ổ đích, ngược lại FTP. Mặc định lấy từ Cài đặt. */
+export function newJob(cfg: Config, usbTargetId?: Uuid): Job {
   return {
     id: crypto.randomUUID(),
     name: "",
@@ -126,10 +176,10 @@ export function newJob(usbTargetId?: Uuid): Job {
       ? { kind: "usb", target_id: usbTargetId }
       : { kind: "ftp", ...emptyFtp() },
     dest_subdir: "",
-    excludes: ["node_modules", ".git", "*.tmp"],
+    excludes: [...cfg.default_excludes],
     mirror_deletes: false,
     versioning: true,
-    keep_versions_days: 30,
+    keep_versions_days: cfg.default_keep_days > 0 ? cfg.default_keep_days : null,
     verify_hash: false,
     auto_run: true,
     interval_minutes: usbTargetId ? null : 60,
@@ -153,4 +203,11 @@ export function bytes(n: number): string {
 
 export function errText(e: unknown): string {
   return typeof e === "string" ? e : e instanceof Error ? e.message : JSON.stringify(e);
+}
+
+/** Kết quả một lượt chạy: ok | warn | error. */
+export function reportStatus(r: Report): "ok" | "error" | "cancelled" {
+  if (r.error || r.failed.length > 0 || r.targetLost) return "error";
+  if (r.cancelled) return "cancelled";
+  return "ok";
 }

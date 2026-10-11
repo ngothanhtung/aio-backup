@@ -17,6 +17,7 @@ pub mod job;
 pub mod marker;
 pub mod names;
 pub mod plan;
+pub mod restore;
 pub mod scan;
 pub mod schedule;
 pub mod secrets;

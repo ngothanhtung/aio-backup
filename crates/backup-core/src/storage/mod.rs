@@ -43,7 +43,43 @@ pub trait Storage {
     fn finish(&mut self) -> Result<()>;
 
     /// Xoá snapshot `.versions` cũ hơn `keep_days` ngày, trả số snapshot đã xoá.
-    fn prune_versions(&mut self, keep_days: u32) -> Result<usize>;
+    fn prune_versions(&mut self, keep_days: u32) -> Result<usize> {
+        let mut removed = 0;
+        for name in self.list_snapshots()? {
+            if snapshot_older_than(&name, keep_days) {
+                self.remove_snapshot(&name)?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
+    // ----- Khôi phục -----
+
+    /// Tên các snapshot trong `.versions` (chỉ tên đúng định dạng thời gian).
+    fn list_snapshots(&mut self) -> Result<Vec<String>>;
+
+    /// Xoá hẳn một snapshot.
+    fn remove_snapshot(&mut self, name: &str) -> Result<()>;
+
+    /// Mọi file (đệ quy) dưới thư mục `rel_dir`; đường dẫn trả về tương đối so với `rel_dir`.
+    fn list_files_under(&mut self, rel_dir: &Path) -> Result<Vec<RemoteFile>>;
+
+    /// Tải file `rel` ở đích về đường dẫn local `dest` (ghi đè nếu có).
+    fn get(&mut self, rel: &Path, dest: &Path) -> Result<()>;
+}
+
+/// Một file ở đích, dùng khi duyệt để khôi phục.
+#[derive(Debug, Clone)]
+pub struct RemoteFile {
+    pub rel: std::path::PathBuf,
+    pub size: u64,
+    pub mtime: Option<std::time::SystemTime>,
+}
+
+/// Tên thư mục có phải snapshot hợp lệ không.
+pub(crate) fn is_snapshot_name(name: &str) -> bool {
+    chrono::NaiveDateTime::parse_from_str(name, crate::engine::VERSION_FMT).is_ok()
 }
 
 /// Đường dẫn tương đối dạng `a/b/c` (dùng cho FTP và manifest).

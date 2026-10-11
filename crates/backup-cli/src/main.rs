@@ -198,6 +198,10 @@ fn main() -> Result<()> {
         Cmd::History { n } => {
             for e in history::recent(&history::default_history_path(), n) {
                 let r = &e.report;
+                if let Some(err) = r["error"].as_str() {
+                    println!("{}  {:<20} ✗ {err}", r["startedAt"].as_str().unwrap_or("?"), e.job_name);
+                    continue;
+                }
                 println!(
                     "{}  {:<20} +{} ~{} -{}  lỗi:{}{}",
                     r["startedAt"].as_str().unwrap_or("?"),
@@ -428,7 +432,21 @@ fn cmd_job(cmd: JobCmd, cfg_path: &Path) -> Result<()> {
 }
 
 fn run_one(job: &Job, dry_run: bool, cancel: &AtomicBool) -> Result<Report> {
-    let mut storage = open_storage(job)?;
+    let started_at = chrono::Utc::now();
+    let mut storage = match open_storage(job) {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = history::append_error(
+                &history::default_history_path(),
+                job.id,
+                &job.name,
+                started_at,
+                dry_run,
+                &e.to_string(),
+            );
+            return Err(e.into());
+        }
+    };
     run_with(job, storage.as_mut(), dry_run, cancel)
 }
 

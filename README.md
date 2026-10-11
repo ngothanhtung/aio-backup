@@ -23,11 +23,15 @@ aio-backup/
 │   │       ├── secrets.rs    # Mật khẩu FTP trong keychain của OS
 │   │       ├── names.rs      # Phát hiện tên file không ghi được lên exFAT/NTFS
 │   │       ├── config.rs     # Job + đích (USB | FTP), config TOML
-│   │       ├── history.rs    # Lịch sử chạy (JSON Lines)
+│   │       ├── restore.rs    # Khôi phục từ bản hiện tại hoặc snapshot .versions
+│   │       ├── history.rs    # Lịch sử chạy (JSON Lines), kể cả lượt lỗi
 │   │       └── job.rs        # Mở đích + lập plan + chạy
 │   └── backup-cli/         # CLI `aio-backup` (test nhanh, chạy headless/cron)
-├── apps/desktop/           # App Tauri 2 + React + Vite
-│   ├── src/                # UI React
+├── apps/desktop/           # App Tauri 2 + React + Vite + Ant Design 6
+│   ├── src/
+│   │   ├── pages/          # Tổng quan, Job, Lịch sử, Khôi phục, Ổ đĩa & Cài đặt
+│   │   ├── components/     # Drawer thêm/sửa job, thẻ trạng thái dùng chung
+│   │   └── useAppData.ts   # State + lắng nghe event từ backend
 │   └── src-tauri/          # Command, watcher USB + lịch, tray icon, autostart
 ├── scripts/
 │   └── ftp_test_server.py  # FTP/FTPS server tối giản để test
@@ -65,6 +69,18 @@ aio-backup/
 
 > Lưu ý: nếu xoá/sửa tay file trên server, manifest không biết. Muốn tải lại toàn bộ
 > thì xoá file `.aio-manifest.json` trong thư mục job trên server.
+
+## Giao diện
+
+| Trang | Nội dung |
+|-------|----------|
+| **Tổng quan** | Số job, đang chạy, lần backup thành công gần nhất, dung lượng 7 ngày; cảnh báo job có lượt chạy gần nhất bị lỗi; bảng tình trạng từng job kèm lần chạy kế tiếp |
+| **Job backup** | Danh sách job, chạy / xem trước / huỷ, tiến độ realtime; thêm/sửa job trong Drawer (USB hoặc FTP, kiểm tra kết nối) |
+| **Lịch sử** | Lọc theo job, kết quả, khoảng ngày; bấm một lượt để xem chi tiết file lỗi và cảnh báo |
+| **Khôi phục** | Chọn job → bản hiện tại hoặc bản cũ trong `.versions` → chọn file trên cây thư mục → khôi phục về thư mục bất kỳ (giữ cấu trúc, tuỳ chọn ghi đè). Chạy được với cả USB và FTP |
+| **Ổ đĩa & Cài đặt** | Ổ đang cắm, đánh dấu ổ đích; khởi động cùng máy, chu kỳ kiểm tra, loại trừ và số ngày giữ bản cũ mặc định |
+
+Giao diện theo chế độ sáng/tối của hệ điều hành, dùng locale tiếng Việt của antd.
 
 ## Chạy thử
 
@@ -156,7 +172,6 @@ Lịch sử chạy nằm ở `history.jsonl` trong thư mục data tương ứng
 - [ ] Thêm đích SFTP / S3 / WebDAV (chỉ cần cài đặt trait `Storage`)
 - [ ] Lệnh "verify" đối chiếu manifest FTP với file thật trên server
 - [ ] Chọn nhiều đích cho một job (USB + NAS cùng lúc)
-- [ ] Khôi phục file từ `.versions` ngay trong UI
 - [ ] Upload song song nhiều file nhỏ, progress theo byte cho file lớn
 - [ ] Lịch sử chuyển sang SQLite (`rusqlite`) để lọc/thống kê
 - [ ] Windows VSS cho file đang bị khoá; nén/mã hoá/dedup qua `rustic_core`

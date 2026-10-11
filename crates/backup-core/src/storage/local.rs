@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use filetime::FileTime;
 use walkdir::WalkDir;
 
-use super::{snapshot_older_than, Storage};
+use super::{is_snapshot_name, RemoteFile, Storage};
 use crate::drives::available_space_for;
 use crate::error::{IoContext, Result};
 use crate::scan::{scan, Filter, ScanResult};
@@ -71,19 +71,47 @@ impl Storage for LocalStorage {
         Ok(())
     }
 
-    fn prune_versions(&mut self, keep_days: u32) -> Result<usize> {
-        let dir = self.root.join(VERSIONS_DIR);
-        let Ok(rd) = fs::read_dir(&dir) else {
-            return Ok(0);
+    fn list_snapshots(&mut self) -> Result<Vec<String>> {
+        let Ok(rd) = fs::read_dir(self.root.join(VERSIONS_DIR)) else {
+            return Ok(vec![]);
         };
-        let mut removed = 0;
-        for e in rd.flatten() {
-            if snapshot_older_than(&e.file_name().to_string_lossy(), keep_days) {
-                fs::remove_dir_all(e.path()).at(e.path())?;
-                removed += 1;
+        Ok(rd
+            .flatten()
+            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| is_snapshot_name(n))
+            .collect())
+    }
+
+    fn remove_snapshot(&mut self, name: &str) -> Result<()> {
+        let p = self.root.join(VERSIONS_DIR).join(name);
+        fs::remove_dir_all(&p).at(&p)
+    }
+
+    fn list_files_under(&mut self, rel_dir: &Path) -> Result<Vec<RemoteFile>> {
+        let base = self.root.join(rel_dir);
+        let mut out = vec![];
+        for e in WalkDir::new(&base).follow_links(false).into_iter().flatten() {
+            if !e.file_type().is_file() {
+                continue;
             }
+            let Ok(rel) = e.path().strip_prefix(&base) else {
+                continue;
+            };
+            let md = e.metadata().ok();
+            out.push(RemoteFile {
+                rel: rel.to_path_buf(),
+                size: md.as_ref().map_or(0, |m| m.len()),
+                mtime: md.and_then(|m| m.modified().ok()),
+            });
         }
-        Ok(removed)
+        Ok(out)
+    }
+
+    fn get(&mut self, rel: &Path, dest: &Path) -> Result<()> {
+        let src = self.root.join(rel);
+        fs::copy(&src, dest).at(&src)?;
+        Ok(())
     }
 }
 

@@ -48,6 +48,20 @@ impl Scheduler {
         self.last_run.insert(job_id, at);
     }
 
+    pub fn last_run(&self, job_id: Uuid) -> Option<DateTime<Utc>> {
+        self.last_run.get(&job_id).copied()
+    }
+
+    /// Lần chạy định kỳ kế tiếp; `None` nếu job không có lịch.
+    /// Với USB, thời điểm này chỉ có hiệu lực khi ổ đang cắm.
+    pub fn next_run(&self, job: &Job, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        let mins = job.interval_minutes.filter(|m| *m > 0)?;
+        Some(match self.last_run.get(&job.id) {
+            Some(t) => (*t + Duration::minutes(mins as i64)).max(now),
+            None => now,
+        })
+    }
+
     fn interval_due(&self, job: &Job, now: DateTime<Utc>) -> bool {
         let Some(mins) = job.interval_minutes.filter(|m| *m > 0) else {
             return false;
@@ -144,6 +158,16 @@ mod tests {
         assert_eq!(d[0].trigger, Trigger::Interval);
         assert!(s.tick(std::slice::from_ref(&job), &none, t0 + Duration::minutes(40)).is_empty());
         assert_eq!(s.tick(&[job], &none, t0 + Duration::minutes(92)).len(), 1);
+    }
+
+    #[test]
+    fn next_run_time() {
+        let job = ftp_job(60);
+        let t0 = Utc::now();
+        let s = Scheduler::new([(job.id, t0 - Duration::minutes(15))].into());
+        assert_eq!(s.next_run(&job, t0), Some(t0 + Duration::minutes(45)));
+        let s = Scheduler::default();
+        assert_eq!(s.next_run(&job, t0), Some(t0));
     }
 
     #[test]

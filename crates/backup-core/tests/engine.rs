@@ -168,3 +168,47 @@ fn hash_mode_skips_touched_files() {
     let p = build_plan(src.path(), dst.path(), &opts).unwrap();
     assert!(p.is_empty());
 }
+
+#[test]
+fn restore_current_and_snapshot() {
+    use backup_core::restore::{list_entries, list_snapshots, restore, RestoreOptions};
+
+    let src = tempfile::tempdir().unwrap();
+    let usb = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    write(&src.path().join("a.txt"), "v1");
+    write(&src.path().join("sub/b.txt"), "bbb");
+    let j = job(src.path(), usb.path());
+    run(&j, usb.path(), false);
+    write(&src.path().join("a.txt"), "version 2");
+    run(&j, usb.path(), false);
+
+    let mut st = LocalStorage::new(dest_dir(&j, usb.path()));
+    let snaps = list_snapshots(&mut st).unwrap();
+    assert_eq!(snaps.len(), 1);
+    assert!(snaps[0].taken_at.is_some());
+
+    let cur = list_entries(&mut st, None).unwrap();
+    let names: Vec<_> = cur.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(names, vec!["a.txt", "sub/b.txt"]);
+    let old = list_entries(&mut st, Some(&snaps[0].name)).unwrap();
+    assert_eq!(old.len(), 1);
+    assert_eq!(old[0].path, "a.txt");
+
+    let cancel = AtomicBool::new(false);
+    let opts = RestoreOptions { target: out.path().to_path_buf(), overwrite: false };
+    // Bản hiện tại: cả 2 file, giữ cấu trúc thư mục
+    let r = restore(&mut st, None, &["a.txt".into(), "sub/b.txt".into()], &opts, &mut |_, _, _| {}, &cancel).unwrap();
+    assert_eq!((r.restored, r.skipped.len()), (2, 0));
+    assert_eq!(fs::read_to_string(out.path().join("a.txt")).unwrap(), "version 2");
+    assert_eq!(fs::read_to_string(out.path().join("sub/b.txt")).unwrap(), "bbb");
+
+    // Snapshot cũ: không ghi đè thì bỏ qua, ghi đè thì lấy lại v1
+    let r = restore(&mut st, Some(&snaps[0].name), &["a.txt".into()], &opts, &mut |_, _, _| {}, &cancel).unwrap();
+    assert_eq!(r.skipped, vec!["a.txt".to_string()]);
+    let opts = RestoreOptions { overwrite: true, ..opts };
+    let r = restore(&mut st, Some(&snaps[0].name), &["a.txt".into(), "../x".into()], &opts, &mut |_, _, _| {}, &cancel).unwrap();
+    assert_eq!(r.restored, 1);
+    assert_eq!(r.failed.len(), 1, "đường dẫn ../ phải bị từ chối");
+    assert_eq!(fs::read_to_string(out.path().join("a.txt")).unwrap(), "v1");
+}

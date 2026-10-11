@@ -15,6 +15,7 @@ use backup_core::engine::{Progress, Report};
 use backup_core::history::{self, HistoryEntry};
 use backup_core::job::{locate_target, open_storage, run_job_on};
 use backup_core::marker::{init_target, TargetMarker};
+use backup_core::restore::{self, RestoreEntry, RestoreOptions, RestoreReport, SnapshotInfo};
 use backup_core::schedule::{Scheduler, Trigger};
 use backup_core::secrets;
 use backup_core::storage::ftp::test_connection;
@@ -32,6 +33,8 @@ struct AppState {
     /// job_id -> cờ huỷ của lượt đang chạy
     running: Mutex<HashMap<Uuid, Arc<AtomicBool>>>,
     scheduler: Mutex<Scheduler>,
+    /// Cờ huỷ của lượt khôi phục đang chạy (mỗi lúc chỉ một lượt).
+    restore_cancel: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -50,6 +53,24 @@ struct FinishedEvent {
     job_name: String,
     report: Option<Report>,
     error: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScheduleInfo {
+    job_id: Uuid,
+    last_run: Option<chrono::DateTime<chrono::Utc>>,
+    next_run: Option<chrono::DateTime<chrono::Utc>>,
+    /// USB: ổ đích đang cắm. FTP: luôn true (không biết trước khi kết nối).
+    available: bool,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RestoreProgress {
+    done: usize,
+    total: usize,
+    current: String,
 }
 
 #[derive(Serialize)]
@@ -206,6 +227,149 @@ async fn get_history(limit: usize) -> CmdResult<Vec<HistoryEntry>> {
     Ok(history::recent(&history::default_history_path(), limit))
 }
 
+/// Lần chạy gần nhất / kế tiếp của từng job, cho trang Tổng quan.
+#[tauri::command]
+async fn get_schedule(state: State<'_, AppState>) -> CmdResult<Vec<ScheduleInfo>> {
+    let jobs = state.config.lock().unwrap().jobs.clone();
+    let present: HashSet<Uuid> = list_drives()
+        .into_iter()
+        .filter_map(|d| d.marker.map(|m| m.id))
+        .collect();
+    let now = chrono::Utc::now();
+    let sched = state.scheduler.lock().unwrap();
+    Ok(jobs
+        .iter()
+        .map(|j| {
+            let available = match &j.destination {
+                Destination::Usb { target_id } => present.contains(target_id),
+                Destination::Ftp(_) => true,
+            };
+            ScheduleInfo {
+                job_id: j.id,
+                last_run: sched.last_run(j.id),
+                next_run: if available { sched.next_run(j, now) } else { None },
+                available,
+            }
+        })
+        .collect())
+}
+
+#[tauri::command]
+async fn save_settings(
+    state: State<'_, AppState>,
+    poll_interval_secs: u64,
+    default_excludes: Vec<String>,
+    default_keep_days: u32,
+) -> CmdResult<Config> {
+    let mut cfg = state.config.lock().unwrap();
+    cfg.poll_interval_secs = poll_interval_secs.clamp(2, 3600);
+    cfg.default_excludes = default_excludes
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    cfg.default_keep_days = default_keep_days;
+    cfg.save(&state.cfg_path).map_err(|e| e.to_string())?;
+    Ok(redacted(&cfg))
+}
+
+fn find_job(state: &AppState, id: Uuid) -> CmdResult<Job> {
+    state
+        .config
+        .lock()
+        .unwrap()
+        .jobs
+        .iter()
+        .find(|j| j.id == id)
+        .cloned()
+        .ok_or_else(|| "Job không tồn tại".to_string())
+}
+
+#[tauri::command]
+async fn list_snapshots(state: State<'_, AppState>, job_id: Uuid) -> CmdResult<Vec<SnapshotInfo>> {
+    let job = find_job(&state, job_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut st = open_storage(&job)?;
+        restore::list_snapshots(st.as_mut())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_restore_entries(
+    state: State<'_, AppState>,
+    job_id: Uuid,
+    snapshot: Option<String>,
+) -> CmdResult<Vec<RestoreEntry>> {
+    let job = find_job(&state, job_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut st = open_storage(&job)?;
+        restore::list_entries(st.as_mut(), snapshot.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn restore_files(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    job_id: Uuid,
+    snapshot: Option<String>,
+    paths: Vec<String>,
+    target: String,
+    overwrite: bool,
+) -> CmdResult<RestoreReport> {
+    let job = find_job(&state, job_id)?;
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut slot = state.restore_cancel.lock().unwrap();
+        if slot.is_some() {
+            return Err("Đang có một lượt khôi phục khác".into());
+        }
+        *slot = Some(cancel.clone());
+    }
+    let app2 = app.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        let mut st = open_storage(&job)?;
+        let opts = RestoreOptions {
+            target: PathBuf::from(target),
+            overwrite,
+        };
+        restore::restore(
+            st.as_mut(),
+            snapshot.as_deref(),
+            &paths,
+            &opts,
+            &mut |done, total, current| {
+                let _ = app2.emit(
+                    "restore-progress",
+                    RestoreProgress {
+                        done,
+                        total,
+                        current: current.to_string(),
+                    },
+                );
+            },
+            &cancel,
+        )
+    })
+    .await;
+    *app.state::<AppState>().restore_cancel.lock().unwrap() = None;
+    res.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn cancel_restore(state: State<'_, AppState>) -> CmdResult<()> {
+    if let Some(c) = state.restore_cancel.lock().unwrap().as_ref() {
+        c.store(true, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
 // ---------- Chạy job trên thread riêng ----------
 
 fn spawn_job(app: &AppHandle, job: Job, dry_run: bool, notify: bool) -> CmdResult<()> {
@@ -228,6 +392,7 @@ fn spawn_job(app: &AppHandle, job: Job, dry_run: bool, notify: bool) -> CmdResul
     let app = app.clone();
     std::thread::spawn(move || {
         let job_id = job.id;
+        let started_at = chrono::Utc::now();
         let mut last_emit = Instant::now() - Duration::from_secs(1);
         // Kết nối FTP có thể mất vài giây -> làm trong thread
         let result = open_storage(&job).and_then(|mut storage| {
@@ -254,7 +419,18 @@ fn spawn_job(app: &AppHandle, job: Job, dry_run: bool, notify: bool) -> CmdResul
                 let _ = history::append(&history::default_history_path(), job.id, &job.name, &r);
                 (Some(r), None)
             }
-            Err(e) => (None, Some(e.to_string())),
+            Err(e) => {
+                let msg = e.to_string();
+                let _ = history::append_error(
+                    &history::default_history_path(),
+                    job.id,
+                    &job.name,
+                    started_at,
+                    dry_run,
+                    &msg,
+                );
+                (None, Some(msg))
+            }
         };
 
         // Lượt tự động lỗi cũng báo, để người dùng biết NAS/USB có vấn đề
@@ -372,6 +548,7 @@ pub fn run() {
             config: Mutex::new(config),
             running: Mutex::new(HashMap::new()),
             scheduler: Mutex::new(scheduler),
+            restore_cancel: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             get_config,
@@ -384,6 +561,12 @@ pub fn run() {
             cancel_job,
             running_jobs,
             get_history,
+            get_schedule,
+            save_settings,
+            list_snapshots,
+            list_restore_entries,
+            restore_files,
+            cancel_restore,
         ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Mở AIO Backup", true, None::<&str>)?;

@@ -44,6 +44,40 @@ pub fn append(path: &Path, job_id: Uuid, job_name: &str, report: &Report) -> Res
     writeln!(f, "{line}").at(path)
 }
 
+/// Ghi một lượt chạy thất bại trước khi kịp bắt đầu (không mở được đích,
+/// sai mật khẩu FTP...), để màn hình theo dõi vẫn thấy lỗi.
+pub fn append_error(
+    path: &Path,
+    job_id: Uuid,
+    job_name: &str,
+    started_at: chrono::DateTime<chrono::Utc>,
+    dry_run: bool,
+    error: &str,
+) -> Result<()> {
+    if let Some(p) = path.parent() {
+        std::fs::create_dir_all(p).at(p)?;
+    }
+    let entry = HistoryEntry {
+        job_id,
+        job_name: job_name.to_string(),
+        report: serde_json::json!({
+            "startedAt": started_at,
+            "finishedAt": chrono::Utc::now(),
+            "dryRun": dry_run,
+            "created": 0, "updated": 0, "deleted": 0, "unchanged": 0, "bytesCopied": 0,
+            "failed": [], "warnings": [], "cancelled": false, "targetLost": false,
+            "error": error,
+        }),
+    };
+    let line = serde_json::to_string(&entry).map_err(anyhow::Error::from)?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .at(path)?;
+    writeln!(f, "{line}").at(path)
+}
+
 /// Thời điểm chạy thật (không tính dry-run) gần nhất của từng job.
 pub fn last_runs(path: &Path) -> std::collections::HashMap<Uuid, chrono::DateTime<chrono::Utc>> {
     let mut out = std::collections::HashMap::new();

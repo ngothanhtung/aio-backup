@@ -17,6 +17,12 @@ fn yes() -> bool {
 fn default_poll() -> u64 {
     5
 }
+fn default_excludes() -> Vec<String> {
+    ["node_modules", ".git", "*.tmp"].map(String::from).to_vec()
+}
+fn default_keep_days() -> u32 {
+    30
+}
 
 fn default_ftp_port() -> u16 {
     21
@@ -144,8 +150,15 @@ impl Job {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Config {
+    /// Chu kỳ kiểm tra ổ đĩa và lịch (giây).
     #[serde(default = "default_poll")]
     pub poll_interval_secs: u64,
+    /// Danh sách loại trừ điền sẵn khi tạo job mới.
+    #[serde(default = "default_excludes")]
+    pub default_excludes: Vec<String>,
+    /// Số ngày giữ bản cũ điền sẵn khi tạo job mới (0 = giữ mãi).
+    #[serde(default = "default_keep_days")]
+    pub default_keep_days: u32,
     #[serde(default)]
     pub jobs: Vec<Job>,
 }
@@ -154,6 +167,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             poll_interval_secs: default_poll(),
+            default_excludes: default_excludes(),
+            default_keep_days: default_keep_days(),
             jobs: vec![],
         }
     }

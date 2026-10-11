@@ -104,6 +104,27 @@ fn ftp_full_cycle() {
     let leftovers: Vec<_> = walk(&remote).into_iter().filter(|p| p.ends_with(".backup-tmp")).collect();
     assert!(leftovers.is_empty(), "{leftovers:?}");
 
+    // Khôi phục qua FTP: bản hiện tại + snapshot
+    {
+        use backup_core::restore::{list_entries, list_snapshots, restore, RestoreOptions};
+        let out = tempfile::tempdir().unwrap();
+        let mut st = FtpStorage::connect(&e.target, &e.password, "Tai lieu").unwrap();
+        let snaps = list_snapshots(&mut st).unwrap();
+        assert_eq!(snaps.len(), 1);
+        let cur = list_entries(&mut st, None).unwrap();
+        assert_eq!(cur.iter().map(|x| x.path.as_str()).collect::<Vec<_>>(), vec!["a.txt"]);
+        let old = list_entries(&mut st, Some(&snaps[0].name)).unwrap();
+        let mut old_paths: Vec<_> = old.iter().map(|x| x.path.clone()).collect();
+        old_paths.sort();
+        assert_eq!(old_paths, vec!["Bài giảng/b c.txt".to_string(), "a.txt".to_string()]);
+        let cancel = AtomicBool::new(false);
+        let opts = RestoreOptions { target: out.path().to_path_buf(), overwrite: false };
+        let r = restore(&mut st, Some(&snaps[0].name), &old_paths, &opts, &mut |_, _, _| {}, &cancel).unwrap();
+        assert_eq!(r.restored, 2, "{r:?}");
+        assert_eq!(fs::read_to_string(out.path().join("Bài giảng/b c.txt")).unwrap(), "bbb");
+        assert_eq!(fs::read_to_string(out.path().join("a.txt")).unwrap(), "v1");
+    }
+
     // Dọn snapshot: đổi tên snapshot thành ngày cũ rồi prune
     let old = remote.join(".versions/2000-01-01_000000");
     fs::rename(snaps[0].path(), &old).unwrap();

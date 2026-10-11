@@ -25,7 +25,7 @@ use suppaftp::rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, Signa
 use suppaftp::types::FileType;
 use suppaftp::{FtpError, RustlsConnector, RustlsFtpStream};
 
-use super::{snapshot_older_than, to_slash, Storage};
+use super::{is_snapshot_name, to_slash, RemoteFile, Storage};
 use crate::config::FtpTarget;
 use crate::error::{BackupError, IoContext, Result};
 use crate::scan::{FileEntry, Filter, ScanResult};
@@ -206,21 +206,23 @@ impl FtpStorage {
         }
     }
 
-    /// Xoá đệ quy một thư mục trên server.
-    fn rm_tree(&mut self, path: &str) -> Result<()> {
+    /// Các mục trong một thư mục trên server (bỏ `.` và `..`).
+    fn list_dir(&mut self, path: &str) -> Result<Vec<suppaftp::list::File>> {
         let lines = self
             .stream
             .list(Some(path))
             .map_err(|e| ftp_err(&format!("LIST {path}"), e))?;
-        for line in lines {
-            let Ok(f) = suppaftp::list::File::try_from(line.as_str()) else {
-                continue;
-            };
-            let name = f.name();
-            if name == "." || name == ".." {
-                continue;
-            }
-            let child = join(path, name);
+        Ok(lines
+            .iter()
+            .filter_map(|l| suppaftp::list::File::try_from(l.as_str()).ok())
+            .filter(|f| f.name() != "." && f.name() != ".." && !f.name().contains('/'))
+            .collect())
+    }
+
+    /// Xoá đệ quy một thư mục trên server.
+    fn rm_tree(&mut self, path: &str) -> Result<()> {
+        for f in self.list_dir(path)? {
+            let child = join(path, f.name());
             if f.is_directory() {
                 self.rm_tree(&child)?;
             } else {
@@ -363,21 +365,57 @@ impl Storage for FtpStorage {
         Ok(())
     }
 
-    fn prune_versions(&mut self, keep_days: u32) -> Result<usize> {
+    fn list_snapshots(&mut self) -> Result<Vec<String>> {
         let dir = self.remote(VERSIONS_DIR);
         let Ok(names) = self.stream.nlst(Some(&dir)) else {
-            return Ok(0);
+            return Ok(vec![]);
         };
-        let mut removed = 0;
-        for n in names {
-            // Có server trả tên đầy đủ, có server chỉ trả tên -> lấy phần cuối
-            let name = n.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string();
-            if snapshot_older_than(&name, keep_days) {
-                self.rm_tree(&join(&dir, &name))?;
-                removed += 1;
+        // Có server trả tên đầy đủ, có server chỉ trả tên -> lấy phần cuối
+        Ok(names
+            .iter()
+            .map(|n| n.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string())
+            .filter(|n| is_snapshot_name(n))
+            .collect())
+    }
+
+    fn remove_snapshot(&mut self, name: &str) -> Result<()> {
+        let dir = join(&self.remote(VERSIONS_DIR), name);
+        self.rm_tree(&dir)
+    }
+
+    fn list_files_under(&mut self, rel_dir: &Path) -> Result<Vec<RemoteFile>> {
+        let base = self.remote(&to_slash(rel_dir));
+        let mut out = vec![];
+        let mut stack = vec![(base.clone(), String::new())];
+        while let Some((dir, prefix)) = stack.pop() {
+            for f in self.list_dir(&dir)? {
+                let rel = join(&prefix, f.name());
+                if f.is_directory() {
+                    stack.push((join(&dir, f.name()), rel));
+                } else if f.is_file() {
+                    out.push(RemoteFile {
+                        rel: PathBuf::from(rel),
+                        size: f.size() as u64,
+                        // LIST thường chỉ chính xác tới phút -> không dùng
+                        mtime: None,
+                    });
+                }
             }
         }
-        Ok(removed)
+        Ok(out)
+    }
+
+    fn get(&mut self, rel: &Path, dest: &Path) -> Result<()> {
+        let r = to_slash(rel);
+        let path = self.remote(&r);
+        let mut file = File::create(dest).at(dest)?;
+        self.stream
+            .retr(&path, |reader| {
+                std::io::copy(reader, &mut file).map_err(FtpError::ConnectionError)
+            })
+            .map_err(|e| ftp_err(&format!("Tải {r}"), e))?;
+        file.sync_all().at(dest)?;
+        Ok(())
     }
 }
 

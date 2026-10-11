@@ -14,7 +14,75 @@ hoặc bằng `gh secret set TÊN < file`.
 
 ---
 
-## Windows
+## Dùng nội bộ (cách đang áp dụng cho AIO Backup)
+
+Không cần mua chứng chỉ. Tự tạo một chứng chỉ ký code cho công ty, cho các máy trong công ty tin nó,
+rồi để CI ký mọi bản cài đặt bằng chứng chỉ đó. Máy ngoài công ty vẫn coi là "không rõ nguồn gốc".
+
+### Bước 1: Tạo chứng chỉ (một lần, trên máy Windows của quản trị)
+
+```powershell
+cd scripts\internal-cert
+.\New-InternalCodeSigningCert.ps1 -Organization "Softech Aptech Da Nang" -OutDir C:\certs\aio
+```
+
+Script hỏi mật khẩu cho file `.pfx`, tạo chứng chỉ RSA 3072 hạn 5 năm và in sẵn lệnh khai báo secret.
+Kết quả gồm 3 file:
+
+| File | Dùng làm gì | Bảo quản |
+|------|-------------|----------|
+| `aio-codesign.pfx` | Khoá bí mật để ký | **Giữ kín** (két, password manager) |
+| `aio-codesign.pfx.b64` | Nội dung đưa vào secret | Xoá sau khi khai báo secret |
+| `aio-codesign.cer` | Chứng chỉ công khai | Phát cho các máy, để trên share IT |
+
+### Bước 2: Khai báo 2 secret cho repo
+
+```powershell
+Get-Content C:\certs\aio\aio-codesign.pfx.b64 -Raw | gh secret set WINDOWS_CERTIFICATE --repo ngothanhtung/aio-backup
+gh secret set WINDOWS_CERTIFICATE_PASSWORD --repo ngothanhtung/aio-backup   # nhập mật khẩu .pfx
+```
+
+Hoặc vào GitHub → Settings → Secrets and variables → Actions → New repository secret.
+Lần build sau, bước **Kiểm tra chữ ký Windows** sẽ in `Valid` cho từng file `.exe`/`.msi`.
+
+### Bước 3: Cho các máy trong công ty tin chứng chỉ
+
+**Máy join domain (khuyên dùng):** Group Policy Management → tạo/sửa GPO gắn vào OU chứa máy →
+Computer Configuration → Policies → Windows Settings → Security Settings → Public Key Policies:
+
+- *Trusted Root Certification Authorities* → Import → `aio-codesign.cer`
+- *Trusted Publishers* → Import → `aio-codesign.cer`
+
+Máy nhận chính sách ở lần khởi động lại hoặc khi chạy `gpupdate /force`.
+
+**Máy lẻ, không join domain:** chạy PowerShell bằng quyền Administrator:
+
+```powershell
+.\Install-InternalCert.ps1 -CertPath \\nas\it\aio-backup\aio-codesign.cer
+# Gỡ: thêm -Remove
+```
+
+### Bước 4: Phân phối bản cài đặt
+
+- **Để file cài trên share nội bộ / NAS và cài từ đó.** File tải bằng trình duyệt bị gắn đánh dấu
+  "tải từ Internet", và SmartScreen vẫn có thể hỏi lại vì chứng chỉ nội bộ không có uy tín công khai.
+- Cài im lặng hàng loạt (GPO startup script, PDQ, Intune...):
+  - NSIS: `"AIO Backup_0.1.0_x64-setup.exe" /S`
+  - MSI: `msiexec /i "AIO Backup_0.1.0_x64_en-US.msi" /qn`
+- Bản cài có kèm timestamp nên **vẫn hợp lệ sau khi chứng chỉ hết hạn**. Trước khi hết hạn 5 năm,
+  tạo chứng chỉ mới, phát `.cer` mới cho các máy trước, rồi mới thay secret.
+
+### macOS và Linux trong công ty
+
+- **macOS:** CI đã ký ad-hoc. Chép `AIO Backup.app` từ share nội bộ vào `/Applications` thường
+  mở được ngay. Nếu tải bằng trình duyệt và macOS báo chặn: chuột phải → Open, hoặc
+  `xattr -dr com.apple.quarantine "/Applications/AIO Backup.app"`. Chỉ cần Apple Developer Program
+  (99 USD/năm) khi phát hành ra ngoài.
+- **Linux:** không cần ký; cài bằng `sudo apt install "./AIO Backup_0.1.0_amd64.deb"`.
+
+---
+
+## Windows: các lựa chọn khi phát hành ra ngoài
 
 Từ 6/2023, chứng chỉ OV/EV mới phải nằm trên phần cứng (token/HSM), nên không còn xuất được file
 `.pfx` để đưa vào CI. Cách làm được trên CI là **ký qua dịch vụ đám mây** của nhà cung cấp chứng chỉ.
@@ -57,28 +125,16 @@ Mỹ, Canada**. Nếu sau này có pháp nhân ở các nước đó:
 | `AZURE_SIGNING_ACCOUNT` | Tên tài khoản Artifact Signing |
 | `AZURE_SIGNING_PROFILE` | Tên certificate profile |
 
-### Cách 4: File PFX (chứng chỉ cũ, hoặc dùng nội bộ)
+### Cách 4: File PFX
 
-Dùng khi có chứng chỉ mua trước 6/2023 dạng `.pfx`, hoặc **chỉ cài cho máy trong công ty**: tạo
-chứng chỉ tự ký, rồi đưa vào *Trusted Publishers* của các máy qua Group Policy. Máy ngoài công ty vẫn
-sẽ coi là không tin cậy.
-
-```powershell
-# Tạo chứng chỉ tự ký (PowerShell, chạy trên Windows)
-$cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=Softech Aptech Da Nang" `
-  -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(3)
-$pwd = ConvertTo-SecureString "mat-khau-manh" -AsPlainText -Force
-Export-PfxCertificate -Cert $cert -FilePath aio-codesign.pfx -Password $pwd
-Export-Certificate -Cert $cert -FilePath aio-codesign.cer   # file này phân phối qua GPO
-
-# Chuyển PFX sang base64 để đưa vào secret
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("aio-codesign.pfx")) | Set-Clipboard
-```
+Dùng cho chứng chỉ nội bộ (xem mục **Dùng nội bộ** ở trên) hoặc chứng chỉ thương mại mua trước 6/2023
+còn xuất được `.pfx`.
 
 | Secret | Giá trị |
 |--------|---------|
 | `WINDOWS_CERTIFICATE` | Nội dung base64 của file `.pfx` |
 | `WINDOWS_CERTIFICATE_PASSWORD` | Mật khẩu file `.pfx` |
+
 
 ### Thử script ký ở máy dev
 

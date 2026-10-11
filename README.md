@@ -35,7 +35,8 @@ aio-backup/
 │   └── src-tauri/          # Command, watcher USB + lịch, tray icon, autostart
 ├── scripts/
 │   ├── ftp_test_server.py  # FTP/FTPS server tối giản để test
-│   └── sign-windows.mjs    # Ký Authenticode qua jsign (eSigner / Azure / PFX)
+│   ├── sign-windows.mjs    # Ký Authenticode qua jsign (eSigner / Azure / PFX)
+│   └── internal-cert/      # Tạo + cài chứng chỉ ký code nội bộ (PowerShell)
 └── .github/workflows/      # CI: test (gồm FTP/FTPS thật) + build installer 3 OS
 ```
 
@@ -147,7 +148,8 @@ npm run tauri build     # tạo installer: .msi/.exe, .dmg, .deb/.AppImage
 
 ### Ký số & phát hành
 
-CI tự ký số bản cài đặt Windows/macOS khi đã khai báo secrets, xem [SIGNING.md](SIGNING.md).
+CI tự ký số bản cài đặt Windows/macOS khi đã khai báo secrets. Dùng nội bộ thì tự tạo chứng chỉ
+bằng `scripts/internal-cert/New-InternalCodeSigningCert.ps1`, xem [SIGNING.md](SIGNING.md).
 Push tag `v*` để CI tạo bản Draft release.
 
 ## Config & dữ liệu

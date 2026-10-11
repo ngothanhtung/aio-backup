@@ -70,17 +70,142 @@ jobs:
       - run: npm ci
         working-directory: apps/desktop
 
+      # ---------- Ký số: chỉ bật khi đã khai báo secrets (xem SIGNING.md) ----------
+      - name: Chuẩn bị ký số Windows
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        env:
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          have() { for v in "$@"; do [ -n "${!v}" ] || return 1; done; }
+          if have ESIGNER_USERNAME ESIGNER_PASSWORD ESIGNER_CREDENTIAL_ID ESIGNER_TOTP_SECRET \
+             || have AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_SIGNING_ENDPOINT \
+             || have WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD; then
+            jar="$RUNNER_TEMP/jsign.jar"
+            curl -sSfL -o "$jar" https://github.com/ebourg/jsign/releases/download/7.5/jsign-7.5.jar
+            echo "602a51c3545a6dc4fb99bd2ea7152b26d1345916d0c93ddfbd5936cb735af91c  $jar" | sha256sum -c -
+            script=$(cygpath -m "$GITHUB_WORKSPACE/scripts/sign-windows.mjs")
+            cfg="$RUNNER_TEMP/tauri.sign.json"
+            printf '{"bundle":{"windows":{"signCommand":"node %s %%1"}}}' "$script" > "$cfg"
+            {
+              echo "JSIGN_JAR=$(cygpath -m "$jar")"
+              echo "SIGN_ARGS=--config $(cygpath -m "$cfg")"
+              echo "WINDOWS_SIGNED=1"
+            } >> "$GITHUB_ENV"
+            echo "::notice::Windows: installer sẽ được ký số"
+          else
+            echo "::warning::Windows: chưa khai báo secrets ký số, installer KHÔNG được ký (xem SIGNING.md)"
+          fi
+
+      - uses: actions/setup-java@v4
+        if: env.WINDOWS_SIGNED == '1'
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Chuẩn bị ký số + notarize macOS
+        if: matrix.platform == 'macos-latest'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # Chỉ đưa biến vào môi trường khi có giá trị: Tauri coi biến rỗng là có cấu hình và sẽ lỗi
+          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_CERTIFICATE_PASSWORD" ] && [ -n "$APPLE_SIGNING_IDENTITY" ]; then
+            {
+              echo "APPLE_CERTIFICATE<<__APPLE_CERT__"
+              echo "$APPLE_CERTIFICATE"
+              echo "__APPLE_CERT__"
+              echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERTIFICATE_PASSWORD"
+              echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
+              echo "MACOS_SIGNED=1"
+            } >> "$GITHUB_ENV"
+            if [ -n "$APPLE_API_ISSUER" ] && [ -n "$APPLE_API_KEY" ] && [ -n "$APPLE_API_PRIVATE_KEY" ]; then
+              keyfile="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+              printf '%s\n' "$APPLE_API_PRIVATE_KEY" > "$keyfile"
+              chmod 600 "$keyfile"
+              {
+                echo "APPLE_API_ISSUER=$APPLE_API_ISSUER"
+                echo "APPLE_API_KEY=$APPLE_API_KEY"
+                echo "APPLE_API_KEY_PATH=$keyfile"
+              } >> "$GITHUB_ENV"
+              echo "::notice::macOS: ký số + notarize bằng App Store Connect API key"
+            elif [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+              {
+                echo "APPLE_ID=$APPLE_ID"
+                echo "APPLE_PASSWORD=$APPLE_PASSWORD"
+                echo "APPLE_TEAM_ID=$APPLE_TEAM_ID"
+              } >> "$GITHUB_ENV"
+              echo "::notice::macOS: ký số + notarize bằng Apple ID"
+            else
+              echo "::warning::macOS: có chứng chỉ nhưng thiếu thông tin notarize, Gatekeeper vẫn sẽ chặn"
+            fi
+          else
+            # Ký ad-hoc: app Apple Silicon không bị báo "bị hỏng", nhưng vẫn cần cho phép trong Privacy & Security
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+            echo "::warning::macOS: chưa khai báo secrets ký số, chỉ ký ad-hoc (xem SIGNING.md)"
+          fi
+
       # Tạo installer: .msi/.exe (Windows), .dmg/.app (macOS), .deb/.AppImage/.rpm (Linux)
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Ký + notarize macOS: thêm APPLE_CERTIFICATE, APPLE_ID... vào secrets
+          # Script ký Windows đọc các biến này (biến rỗng được bỏ qua)
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         with:
           projectPath: apps/desktop
-          args: ${{ matrix.args }}
+          args: ${{ matrix.args }} ${{ env.SIGN_ARGS }}
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
           releaseName: "AIO Backup ${{ github.ref_name }}"
           releaseDraft: true
+
+      # ---------- Kiểm tra chữ ký: có secrets mà file chưa ký thì báo lỗi ----------
+      - name: Kiểm tra chữ ký Windows
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Recurse target/release/bundle -Include *.exe,*.msi
+          $bad = 0
+          foreach ($f in $files) {
+            $sig = Get-AuthenticodeSignature $f.FullName
+            "{0,-14} {1}  {2}" -f $sig.Status, $f.Name, $sig.SignerCertificate.Subject
+            if ($sig.Status -ne 'Valid') { $bad++ }
+          }
+          if ($env:WINDOWS_SIGNED -eq '1' -and $bad -gt 0) { throw "$bad file chưa được ký hợp lệ" }
+
+      - name: Kiểm tra chữ ký macOS
+        if: matrix.platform == 'macos-latest'
+        run: |
+          app=$(find target -maxdepth 6 -path '*release/bundle/macos/*.app' | head -1)
+          codesign -dv --verbose=2 "$app" 2>&1 | grep -E 'Authority|Identifier|TeamIdentifier|Signature' || true
+          codesign --verify --deep --strict "$app"
+          if [ "$MACOS_SIGNED" = "1" ]; then spctl -a -vv "$app" || echo "::warning::Gatekeeper chưa chấp nhận (chưa notarize?)"; fi
 
       - uses: actions/upload-artifact@v4
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}

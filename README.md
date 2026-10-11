@@ -34,7 +34,8 @@ aio-backup/
 │   │   └── useAppData.ts   # State + lắng nghe event từ backend
 │   └── src-tauri/          # Command, watcher USB + lịch, tray icon, autostart
 ├── scripts/
-│   └── ftp_test_server.py  # FTP/FTPS server tối giản để test
+│   ├── ftp_test_server.py  # FTP/FTPS server tối giản để test
+│   └── sign-windows.mjs    # Ký Authenticode qua jsign (eSigner / Azure / PFX)
 └── .github/workflows/      # CI: test (gồm FTP/FTPS thật) + build installer 3 OS
 ```
 
@@ -144,6 +145,11 @@ npm run tauri build     # tạo installer: .msi/.exe, .dmg, .deb/.AppImage
 Đóng cửa sổ thì app ẩn xuống khay hệ thống, watcher vẫn chạy. Bật "Khởi động cùng máy"
 để app tự chạy ẩn khi đăng nhập.
 
+### Ký số & phát hành
+
+CI tự ký số bản cài đặt Windows/macOS khi đã khai báo secrets, xem [SIGNING.md](SIGNING.md).
+Push tag `v*` để CI tạo bản Draft release.
+
 ## Config & dữ liệu
 
 | OS      | Config                                                            |
@@ -175,4 +181,4 @@ Lịch sử chạy nằm ở `history.jsonl` trong thư mục data tương ứng
 - [ ] Upload song song nhiều file nhỏ, progress theo byte cho file lớn
 - [ ] Lịch sử chuyển sang SQLite (`rusqlite`) để lọc/thống kê
 - [ ] Windows VSS cho file đang bị khoá; nén/mã hoá/dedup qua `rustic_core`
-- [ ] Ký code + notarize macOS, auto-update (`tauri-plugin-updater`)
+- [ ] Auto-update (`tauri-plugin-updater`)

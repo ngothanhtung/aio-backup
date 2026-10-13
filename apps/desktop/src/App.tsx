@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { App as AntApp, Layout, Menu, type MenuProps } from "antd";
+import { useState, type ReactNode } from "react";
+import { App as AntApp } from "antd";
 import {
   DashboardOutlined,
   HddOutlined,
@@ -10,6 +10,7 @@ import {
 import { api, errText, newJob, type Job } from "./api";
 import { useAppData, type AppData } from "./useAppData";
 import JobDrawer from "./components/JobDrawer";
+import TitleBar from "./components/TitleBar";
 import Dashboard from "./pages/Dashboard";
 import Jobs from "./pages/Jobs";
 import History from "./pages/History";
@@ -18,7 +19,7 @@ import DrivesSettings from "./pages/DrivesSettings";
 
 export type PageKey = "dashboard" | "jobs" | "history" | "restore" | "drives";
 
-const menuItems: MenuProps["items"] = [
+const navItems: { key: PageKey; icon: ReactNode; label: string }[] = [
   { key: "dashboard", icon: <DashboardOutlined />, label: "Tổng quan" },
   { key: "jobs", icon: <UnorderedListOutlined />, label: "Job backup" },
   { key: "history", icon: <HistoryOutlined />, label: "Lịch sử" },
@@ -58,7 +59,7 @@ export default function App() {
     }
   });
   const [page, setPage] = useState<PageKey>("dashboard");
-  const [collapsed, setCollapsed] = useState(false);
+  const runningCount = Object.keys(data.running).length;
   const [editing, setEditing] = useState<Job | null>(null);
   const [restoreJob, setRestoreJob] = useState<string | undefined>();
 
@@ -96,38 +97,41 @@ export default function App() {
   const props: PageProps = { data, actions, goto: setPage };
 
   return (
-    <Layout className="app-layout">
-      <Layout.Sider
-        className="app-sider"
-        theme="light"
-        width={208}
-        collapsible
-        collapsed={collapsed}
-        onCollapse={setCollapsed}
-        breakpoint="md"
-        style={{ position: "sticky", top: 0, height: "100vh", overflow: "auto" }}
-      >
-        <div className="brand">
+    <div className="shell">
+      <aside className="sidebar">
+        <div className="brand" data-tauri-drag-region>
           <img src="/icon.png" alt="" />
-          {!collapsed && <span>AIO Backup</span>}
+          <span>AIO Backup</span>
         </div>
-        <Menu
-          mode="inline"
-          selectedKeys={[page]}
-          items={menuItems}
-          onClick={(e) => setPage(e.key as PageKey)}
-          style={{ borderInlineEnd: "none" }}
-        />
-      </Layout.Sider>
-      <Layout>
-        <Layout.Content>
+        <nav className="nav">
+          {navItems.map((item) => (
+            <button
+              key={item.key}
+              className={page === item.key ? "nav-item active" : "nav-item"}
+              title={item.label}
+              onClick={() => setPage(item.key)}
+            >
+              {item.icon}
+              <span className="nav-label">{item.label}</span>
+              {item.key === "jobs" && runningCount > 0 && <span className="nav-badge">{runningCount}</span>}
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-foot">
+          <span className={runningCount ? "status-dot busy" : "status-dot"} />
+          <span>{runningCount ? `Đang chạy ${runningCount} job` : "Sẵn sàng"}</span>
+        </div>
+      </aside>
+      <div className="main">
+        <TitleBar />
+        <main className="content">
           {page === "dashboard" && <Dashboard {...props} />}
           {page === "jobs" && <Jobs {...props} />}
           {page === "history" && <History {...props} />}
           {page === "restore" && <Restore {...props} initialJobId={restoreJob} />}
           {page === "drives" && <DrivesSettings {...props} />}
-        </Layout.Content>
-      </Layout>
+        </main>
+      </div>
 
       <JobDrawer
         job={editing}
@@ -143,6 +147,6 @@ export default function App() {
           if (warning) notification.warning({ title: "Mật khẩu FTP", description: warning });
         }}
       />
-    </Layout>
+    </div>
   );
 }

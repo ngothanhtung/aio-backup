@@ -1,12 +1,38 @@
-import { useMemo } from "react";
-import { Alert, Button, Card, Col, Empty, Row, Space, Statistic, Table, Typography } from "antd";
-import { CaretRightOutlined, PlusOutlined } from "@ant-design/icons";
+import { useMemo, type ReactNode } from "react";
+import { Alert, Button, Card, Col, Empty, Row, Space, Table, theme, Typography } from "antd";
+import {
+  CaretRightOutlined,
+  CheckCircleOutlined,
+  CloudUploadOutlined,
+  PlusOutlined,
+  SyncOutlined,
+  UnorderedListOutlined,
+} from "@ant-design/icons";
 import dayjs from "dayjs";
 import { bytes, reportStatus, type Job } from "../api";
 import type { PageProps } from "../App";
 import { DestLabel, RunProgress, StatusTag, TimeAgo } from "../components/common";
 
+function StatCard(props: { icon: ReactNode; color: string; title: string; value: ReactNode; sub: ReactNode }) {
+  return (
+    <Card className="stat-card">
+      <div
+        className="stat-icon"
+        style={{ color: props.color, background: `color-mix(in srgb, ${props.color} 14%, transparent)` }}
+      >
+        {props.icon}
+      </div>
+      <div className="stat-body">
+        <div className="stat-title">{props.title}</div>
+        <div className="stat-value">{props.value}</div>
+        <div className="stat-sub">{props.sub}</div>
+      </div>
+    </Card>
+  );
+}
+
 export default function Dashboard({ data, actions, goto }: PageProps) {
+  const { token } = theme.useToken();
   const { config, history, running, schedule, lastRunByJob, presentTargets } = data;
   const jobs = config.jobs;
   const scheduleBy = useMemo(() => new Map(schedule.map((s) => [s.jobId, s])), [schedule]);
@@ -56,46 +82,46 @@ export default function Dashboard({ data, actions, goto }: PageProps) {
         </Button>
       </div>
 
-      <Row gutter={[16, 16]}>
+      <Row gutter={[12, 12]}>
         <Col xs={12} md={6}>
-          <Card style={{ height: "100%" }}>
-            <Statistic title="Job backup" value={jobs.length} />
-            <Typography.Text type="secondary">
-              {stats.usb} USB · {stats.ftp} FTP
-            </Typography.Text>
-          </Card>
+          <StatCard
+            icon={<UnorderedListOutlined />}
+            color={token.colorPrimary}
+            title="Job backup"
+            value={jobs.length}
+            sub={`${stats.usb} ổ đĩa · ${stats.ftp} FTP`}
+          />
         </Col>
         <Col xs={12} md={6}>
-          <Card style={{ height: "100%" }}>
-            <Statistic
-              title="Đang chạy"
-              value={runningCount}
-              styles={{ content: runningCount ? { color: "#1f6feb" } : undefined }}
-            />
-            <Typography.Text type="secondary">
-              {presentTargets.size} ổ đích đang cắm
-            </Typography.Text>
-          </Card>
+          <StatCard
+            icon={<SyncOutlined spin={runningCount > 0} />}
+            color={token.purple}
+            title="Đang chạy"
+            value={runningCount}
+            sub={`${presentTargets.size} ổ đích đang cắm`}
+          />
         </Col>
         <Col xs={12} md={6}>
-          <Card style={{ height: "100%" }}>
-            <Statistic
-              title="Backup thành công gần nhất"
-              value={stats.last ? dayjs(stats.last.report.finishedAt).fromNow() : "Chưa có"}
-              styles={{ content: { fontSize: 20 } }}
-            />
-            <Typography.Text type="secondary" ellipsis>
-              {stats.last?.jobName ?? "—"}
-            </Typography.Text>
-          </Card>
+          <StatCard
+            icon={<CheckCircleOutlined />}
+            color={token.colorSuccess}
+            title="Thành công gần nhất"
+            value={stats.last ? dayjs(stats.last.report.finishedAt).fromNow() : "Chưa có"}
+            sub={stats.last?.jobName ?? "—"}
+          />
         </Col>
         <Col xs={12} md={6}>
-          <Card style={{ height: "100%" }}>
-            <Statistic title="7 ngày qua" value={bytes(stats.weekBytes)} styles={{ content: { fontSize: 20 } }} />
-            <Typography.Text type={stats.weekErrors ? "danger" : "secondary"}>
-              {stats.weekRuns} lượt chạy{stats.weekErrors ? ` · ${stats.weekErrors} lỗi` : ""}
-            </Typography.Text>
-          </Card>
+          <StatCard
+            icon={<CloudUploadOutlined />}
+            color={token.colorWarning}
+            title="7 ngày qua"
+            value={bytes(stats.weekBytes)}
+            sub={
+              <Typography.Text type={stats.weekErrors ? "danger" : "secondary"} style={{ fontSize: 12 }}>
+                {stats.weekRuns} lượt chạy{stats.weekErrors ? ` · ${stats.weekErrors} lỗi` : ""}
+              </Typography.Text>
+            }
+          />
         </Col>
       </Row>
 
@@ -122,7 +148,7 @@ export default function Dashboard({ data, actions, goto }: PageProps) {
         />
       )}
 
-      <Card title="Tình trạng job" style={{ marginTop: 16 }} styles={{ body: { padding: 0 } }}>
+      <Card title="Tình trạng job" style={{ marginTop: 12 }} styles={{ body: { padding: 0 } }}>
         {jobs.length === 0 ? (
           <Empty
             style={{ padding: 32 }}

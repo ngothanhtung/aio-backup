@@ -9,7 +9,7 @@ import {
   UsbOutlined,
 } from "@ant-design/icons";
 import dayjs from "dayjs";
-import { bytes, ftpUrl, reportStatus, type DriveInfo, type Job, type Report } from "../api";
+import { bytes, ftpUrl, reportStatus, type DriveInfo, type Job, type Report, type Schedule } from "../api";
 import type { RunState } from "../useAppData";
 
 /** Nhãn đích: USB (tên ổ) hoặc FTP (url). */
@@ -120,6 +120,15 @@ export function duration(r: Report): string {
 }
 
 /** "Mỗi 90 phút" / "Mỗi 2 giờ" / "Mỗi ngày". */
+export const WEEKDAYS = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"];
+
+export function scheduleLabel(s: Schedule): string {
+  if (s.every === "daily") return `Hằng ngày ${s.at}`;
+  if (s.every === "monthly") return `Ngày ${s.day} hằng tháng ${s.at}`;
+  const days = [...s.weekdays].sort((a, b) => a - b).map((d) => WEEKDAYS[d - 1]);
+  return `${days.join(", ")} ${s.at}`;
+}
+
 export function everyLabel(min: number): string {
   if (min % 1440 === 0) return min === 1440 ? "Mỗi ngày" : `Mỗi ${min / 1440} ngày`;
   if (min % 60 === 0) return `Mỗi ${min / 60} giờ`;

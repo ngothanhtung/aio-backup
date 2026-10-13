@@ -132,7 +132,8 @@ export default function App() {
       <JobDrawer
         job={editing}
         config={data.config}
-        targets={data.targets}
+        drives={data.drives}
+        onDrivesChanged={data.refreshDrives}
         onClose={() => setEditing(null)}
         onSaved={(cfg, warning) => {
           data.setConfig(cfg);

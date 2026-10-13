@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use backup_core::config::{default_config_path, Config, Destination, FtpTarget, Job};
+use backup_core::config::{default_config_path, Config, Destination, FtpTarget, Job, Schedule};
 use backup_core::drives::list_drives;
 use backup_core::engine::{Progress, Report};
 use backup_core::history;
@@ -72,7 +72,7 @@ enum Cmd {
 #[derive(Subcommand)]
 enum JobCmd {
     /// Thêm job. Đích là USB (--target) hoặc FTP (--ftp)
-    Add(AddJob),
+    Add(Box<AddJob>),
     List,
     Remove {
         job: String,
@@ -108,6 +108,15 @@ struct AddJob {
     /// Chạy định kỳ mỗi N phút (mặc định FTP: 60)
     #[arg(long)]
     every: Option<u32>,
+    /// Chạy vào giờ cố định HH:MM (giờ máy). Mặc định hằng ngày; thêm --weekdays hoặc --month-day
+    #[arg(long, value_parser = parse_hhmm)]
+    at: Option<chrono::NaiveTime>,
+    /// Cùng --at: chỉ chạy các thứ này, 1 = thứ Hai ... 7 = Chủ nhật, vd 1,3,5
+    #[arg(long, requires = "at", conflicts_with = "month_day", value_delimiter = ',', value_parser = clap::value_parser!(u8).range(1..=7))]
+    weekdays: Vec<u8>,
+    /// Cùng --at: chỉ chạy ngày này hằng tháng (tháng thiếu ngày thì lấy ngày cuối tháng)
+    #[arg(long, requires = "at", value_parser = clap::value_parser!(u8).range(1..=31))]
+    month_day: Option<u8>,
     #[arg(long, default_value = "")]
     subdir: String,
     /// Glob loại trừ, lặp lại được: --exclude node_modules --exclude "*.tmp"
@@ -127,6 +136,10 @@ struct AddJob {
     /// Không tự chạy khi cắm USB
     #[arg(long)]
     no_auto: bool,
+}
+
+fn parse_hhmm(s: &str) -> Result<chrono::NaiveTime, String> {
+    chrono::NaiveTime::parse_from_str(s, "%H:%M").map_err(|_| format!("'{s}' không đúng dạng HH:MM"))
 }
 
 fn main() -> Result<()> {
@@ -301,6 +314,7 @@ fn cmd_job(cmd: JobCmd, cfg_path: &Path) -> Result<()> {
     let mut cfg = Config::load(cfg_path)?;
     match cmd {
         JobCmd::Add(a) => {
+            let a = *a;
             if cfg.find_job(&a.name).is_some() {
                 bail!("Job '{}' đã tồn tại", a.name);
             }
@@ -346,6 +360,20 @@ fn cmd_job(cmd: JobCmd, cfg_path: &Path) -> Result<()> {
             if a.every.is_some() {
                 job.interval_minutes = a.every.filter(|m| *m > 0);
             }
+            if let Some(at) = a.at {
+                job.schedule = Some(match (a.month_day, a.weekdays.is_empty()) {
+                    (Some(day), _) => Schedule::Monthly { at, day },
+                    (None, false) => Schedule::Weekly {
+                        at,
+                        weekdays: a.weekdays,
+                    },
+                    (None, true) => Schedule::Daily { at },
+                });
+                // Đã hẹn giờ thì bỏ mặc định "mỗi 60 phút" của FTP, trừ khi có --every
+                if a.every.is_none() {
+                    job.interval_minutes = None;
+                }
+            }
 
             if let Some(pw) = password {
                 if let Some(warn) = secrets::set_job_password(&mut job, &pw) {
@@ -380,7 +408,8 @@ fn cmd_job(cmd: JobCmd, cfg_path: &Path) -> Result<()> {
                 let every = j
                     .interval_minutes
                     .map(|m| format!(" · mỗi {m} phút"))
-                    .unwrap_or_default();
+                    .unwrap_or_default()
+                    + &j.schedule.as_ref().map(|s| format!(" · {s}")).unwrap_or_default();
                 println!(
                     "{status}  {}\n    nguồn: {}\n    đích:  {}{every}\n    mirror:{} versioning:{} auto:{} exclude:{:?}",
                     j.name,

@@ -49,11 +49,15 @@ aio-backup/
 - **Versioning**: file bị ghi đè hoặc xoá được chuyển vào `.versions/YYYY-MM-DD_HHMMSS/`,
   tự dọn sau N ngày (mặc định 30).
 - **Mirror** (tắt mặc định): xoá ở đích những file đã xoá ở nguồn.
-- **Lịch**: `interval_minutes` chạy job định kỳ. App và lệnh `watch` kiểm tra mỗi 5 giây.
+- **Lịch**: `interval_minutes` chạy job mỗi N phút; `schedule` chạy vào giờ cố định hằng ngày,
+  hằng tuần (chọn thứ) hoặc hằng tháng (chọn ngày), theo giờ của máy. Lỡ giờ vì máy tắt hay ổ
+  chưa cắm thì chạy bù ngay khi có thể. App và lệnh `watch` kiểm tra mỗi 5 giây.
 
 **Đích USB**
 - Đánh dấu ổ bằng file `.backup-id` (chứa UUID) ở gốc ổ, nên không phụ thuộc ký tự ổ
   (`E:`, `F:`) hay mount path (`/media/...`, `/Volumes/...`).
+- Đích không bắt buộc là USB: khi chọn ổ đích trong app, tick "Hiện tất cả ổ đĩa" để chọn
+  cả ổ cứng trong máy; ổ chưa đánh dấu sẽ được ghi `.backup-id` khi lưu job.
 - Cắm ổ đích vào là các job bật `auto_run` tự chạy, xong thì hiện thông báo hệ thống.
 - Trước khi chạy có kiểm tra dung lượng trống; mtime file được giữ nguyên.
 
@@ -124,6 +128,8 @@ ab job add --name "Tai lieu" --source ~/Documents --target /media/$USER/T7 \
 # FTP/FTPS (mật khẩu được hỏi khi chạy lệnh)
 ab job add --name "NAS" --source ~/Pictures \
            --ftp ftps://backup@192.168.1.10/volume1/backup --insecure --every 120
+ab job add --name "Anh" --source ~/Pictures --target /media/$USER/T7 \
+           --at 02:00 --weekdays 1,5      # 02:00 thứ Hai và thứ Sáu; --month-day 1 = hằng tháng
 ab job test nas                 # kiểm tra kết nối + quyền ghi
 ab job set-password nas         # đổi mật khẩu
 

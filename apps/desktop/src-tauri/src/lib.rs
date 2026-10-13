@@ -117,6 +117,9 @@ async fn save_job(state: State<'_, AppState>, mut job: Job, password: Option<Str
     if !job.source.is_dir() {
         return Err(format!("Thư mục nguồn không tồn tại: {}", job.source.display()));
     }
+    if job.schedule.as_ref().is_some_and(|s| !s.is_valid()) {
+        return Err("Lịch chạy không hợp lệ: chọn ít nhất một thứ trong tuần, ngày trong tháng từ 1 đến 31".into());
+    }
 
     let mut cfg = state.config.lock().unwrap();
     if cfg
@@ -149,6 +152,11 @@ async fn save_job(state: State<'_, AppState>, mut job: Job, password: Option<Str
             }
             None => {}
         }
+    }
+
+    let old_schedule = cfg.jobs.iter().find(|j| j.id == job.id).and_then(|j| j.schedule.as_ref());
+    if job.schedule.is_some() && job.schedule.as_ref() != old_schedule {
+        state.scheduler.lock().unwrap().reschedule(job.id, chrono::Utc::now());
     }
 
     match cfg.jobs.iter_mut().find(|j| j.id == job.id) {

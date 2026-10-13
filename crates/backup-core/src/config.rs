@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use chrono::NaiveTime;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -86,6 +87,45 @@ impl Destination {
     }
 }
 
+/// Lịch chạy vào giờ cố định, tính theo giờ địa phương của máy.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "every", rename_all = "lowercase")]
+pub enum Schedule {
+    Daily {
+        #[serde(with = "hhmm")]
+        at: NaiveTime,
+    },
+    Weekly {
+        #[serde(with = "hhmm")]
+        at: NaiveTime,
+        /// 1 = thứ Hai ... 7 = Chủ nhật.
+        weekdays: Vec<u8>,
+    },
+    Monthly {
+        #[serde(with = "hhmm")]
+        at: NaiveTime,
+        /// Ngày trong tháng (1..=31). Tháng không có ngày này thì lấy ngày cuối tháng.
+        day: u8,
+    },
+}
+
+/// Giờ dạng `HH:MM` trong config, dễ sửa tay hơn `HH:MM:SS` mặc định của chrono.
+mod hhmm {
+    use chrono::NaiveTime;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub const FMT: &str = "%H:%M";
+
+    pub fn serialize<S: Serializer>(t: &NaiveTime, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(&t.format(FMT))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<NaiveTime, D::Error> {
+        let s = String::deserialize(d)?;
+        NaiveTime::parse_from_str(&s, FMT).map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Job {
     pub id: Uuid,
@@ -113,6 +153,9 @@ pub struct Job {
     /// Chạy định kỳ mỗi N phút (FTP; với USB thì chỉ khi ổ đang cắm).
     #[serde(default)]
     pub interval_minutes: Option<u32>,
+    /// Chạy vào giờ cố định hằng ngày/tuần/tháng (với USB thì chỉ khi ổ đang cắm).
+    #[serde(default)]
+    pub schedule: Option<Schedule>,
 }
 
 impl Job {
@@ -132,6 +175,7 @@ impl Job {
             auto_run: true,
             // FTP không có sự kiện "cắm vào" nên mặc định chạy mỗi giờ
             interval_minutes: is_ftp.then_some(60),
+            schedule: None,
         }
     }
 
@@ -238,6 +282,10 @@ mod tests {
 
         let mut c = Config::default();
         c.jobs.push(Job::usb("Tai lieu", "/home/a/Documents", Uuid::new_v4()));
+        c.jobs[0].schedule = Some(Schedule::Weekly {
+            at: NaiveTime::from_hms_opt(2, 30, 0).unwrap(),
+            weekdays: vec![1, 5],
+        });
         c.jobs.push(Job::new(
             "NAS",
             "/home/a/Pictures",

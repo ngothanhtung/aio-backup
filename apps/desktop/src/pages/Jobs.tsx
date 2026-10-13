@@ -13,7 +13,15 @@ import {
 } from "@ant-design/icons";
 import { bytes, type Job } from "../api";
 import type { PageProps } from "../App";
-import { Counts, DestLabel, everyLabel, RunProgress, StatusTag, TimeAgo } from "../components/common";
+import {
+  Counts,
+  DestLabel,
+  everyLabel,
+  RunProgress,
+  scheduleLabel,
+  StatusTag,
+  TimeAgo,
+} from "../components/common";
 
 export default function Jobs({ data, actions }: PageProps) {
   const { config, running, results, lastRunByJob, presentTargets } = data;
@@ -51,7 +59,7 @@ export default function Jobs({ data, actions }: PageProps) {
           },
           {
             title: "Chạy khi",
-            width: 130,
+            width: 150,
             render: (_, j) => (
               <Space orientation="vertical" size={4}>
                 {j.destination.kind === "usb" && j.auto_run && (
@@ -60,7 +68,12 @@ export default function Jobs({ data, actions }: PageProps) {
                 {j.interval_minutes ? (
                   <Tag icon={<ClockCircleOutlined />}>{everyLabel(j.interval_minutes)}</Tag>
                 ) : null}
-                {!j.interval_minutes && !(j.destination.kind === "usb" && j.auto_run) && (
+                {j.schedule && (
+                  <Tag icon={<ClockCircleOutlined />} style={{ whiteSpace: "normal" }}>
+                    {scheduleLabel(j.schedule)}
+                  </Tag>
+                )}
+                {!j.interval_minutes && !j.schedule && !(j.destination.kind === "usb" && j.auto_run) && (
                   <Typography.Text type="secondary">Thủ công</Typography.Text>
                 )}
               </Space>

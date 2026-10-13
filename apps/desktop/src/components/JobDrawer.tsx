@@ -14,11 +14,34 @@ import {
   Select,
   Space,
   Switch,
+  TimePicker,
   Typography,
 } from "antd";
 import { CloudServerOutlined, FolderOpenOutlined, UsbOutlined } from "@ant-design/icons";
 import { open } from "@tauri-apps/plugin-dialog";
-import { api, errText, type Config, type DriveInfo, type FtpTarget, type Job } from "../api";
+import dayjs, { type Dayjs } from "dayjs";
+import {
+  api,
+  bytes,
+  errText,
+  type Config,
+  type DriveInfo,
+  type FtpTarget,
+  type Job,
+  type Schedule,
+} from "../api";
+import { WEEKDAYS } from "./common";
+
+type Repeat = "none" | "interval" | Schedule["every"];
+
+/** Giá trị tạm của ô "Ổ đích" cho ổ chưa đánh dấu: tiền tố + mount point. */
+const UNMARKED = "path:";
+
+const toTime = (s?: string): Dayjs | null => {
+  if (!s) return null;
+  const [h, m] = s.split(":").map(Number);
+  return dayjs().hour(h).minute(m).second(0);
+};
 
 interface FormValues {
   name: string;
@@ -35,11 +58,28 @@ interface FormValues {
   dest_subdir: string;
   excludes: string[];
   auto_run: boolean;
+  repeat: Repeat;
   interval_minutes: number;
+  at: string;
+  weekdays: number[];
+  month_day: number;
   versioning: boolean;
   keep_versions_days: number;
   mirror_deletes: boolean;
   verify_hash: boolean;
+}
+
+function scheduleOf(v: FormValues): Schedule | null {
+  switch (v.repeat) {
+    case "daily":
+      return { every: "daily", at: v.at };
+    case "weekly":
+      return { every: "weekly", at: v.at, weekdays: v.weekdays };
+    case "monthly":
+      return { every: "monthly", at: v.at, day: v.month_day };
+    default:
+      return null;
+  }
 }
 
 function toForm(job: Job): FormValues {
@@ -60,7 +100,11 @@ function toForm(job: Job): FormValues {
     dest_subdir: job.dest_subdir,
     excludes: job.excludes,
     auto_run: job.auto_run,
-    interval_minutes: job.interval_minutes ?? 0,
+    repeat: job.schedule?.every ?? (job.interval_minutes ? "interval" : "none"),
+    interval_minutes: job.interval_minutes ?? 60,
+    at: job.schedule?.at ?? "02:00",
+    weekdays: job.schedule?.every === "weekly" ? job.schedule.weekdays : [1],
+    month_day: job.schedule?.every === "monthly" ? job.schedule.day : 1,
     versioning: job.versioning,
     keep_versions_days: job.keep_versions_days ?? 0,
     mirror_deletes: job.mirror_deletes,
@@ -88,7 +132,8 @@ function toJob(base: Job, v: FormValues): Job {
     dest_subdir: (v.dest_subdir ?? "").trim(),
     excludes: v.excludes ?? [],
     auto_run: v.kind === "usb" ? !!v.auto_run : true,
-    interval_minutes: v.interval_minutes > 0 ? v.interval_minutes : null,
+    interval_minutes: v.repeat === "interval" && v.interval_minutes > 0 ? v.interval_minutes : null,
+    schedule: scheduleOf(v),
     versioning: !!v.versioning,
     keep_versions_days: v.versioning && v.keep_versions_days > 0 ? v.keep_versions_days : null,
     mirror_deletes: !!v.mirror_deletes,
@@ -99,7 +144,8 @@ function toJob(base: Job, v: FormValues): Job {
 export default function JobDrawer(props: {
   job: Job | null;
   config: Config;
-  targets: DriveInfo[];
+  drives: DriveInfo[];
+  onDrivesChanged: () => void;
   onClose: () => void;
   onSaved: (cfg: Config, warning: string | null) => void;
 }) {
@@ -109,6 +155,9 @@ export default function JobDrawer(props: {
   const secure = Form.useWatch("secure", form);
   const versioning = Form.useWatch("versioning", form);
   const mirror = Form.useWatch("mirror_deletes", form);
+  const repeat = Form.useWatch("repeat", form);
+  const targetId = Form.useWatch("target_id", form);
+  const [showAllDrives, setShowAllDrives] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
@@ -122,15 +171,23 @@ export default function JobDrawer(props: {
       form.setFieldsValue(toForm(job));
       setError(null);
       setTestMsg(null);
+      setShowAllDrives(false);
     }
   }, [job, form]);
 
   if (!job) return null;
 
-  const usbOptions = props.targets.map((t) => ({
-    value: t.marker!.id,
-    label: `${t.marker!.label} — ${t.mount_point}`,
-  }));
+  // Mặc định chỉ hiện ổ đã đánh dấu; bật "tất cả ổ đĩa" thì thêm cả ổ cứng trong máy
+  const usbOptions = props.drives
+    .filter((d) => d.marker || showAllDrives)
+    .map((d) =>
+      d.marker
+        ? { value: d.marker.id, label: `${d.marker.label} — ${d.mount_point}` }
+        : {
+            value: UNMARKED + d.mount_point,
+            label: `${d.name || (d.removable ? "Ổ rời" : "Ổ đĩa")} — ${d.mount_point} · trống ${bytes(d.available_space)}`,
+          },
+    );
   const currentUsb = job.destination.kind === "usb" ? job.destination.target_id : "";
   if (currentUsb && !usbOptions.some((o) => o.value === currentUsb)) {
     usbOptions.unshift({ value: currentUsb, label: "(ổ hiện chưa cắm)" });
@@ -165,6 +222,15 @@ export default function JobDrawer(props: {
     setSaving(true);
     setError(null);
     try {
+      if (v.kind === "usb" && v.target_id?.startsWith(UNMARKED)) {
+        // Ổ chưa đánh dấu: ghi .backup-id trước để có UUID nhận diện
+        const mount = v.target_id.slice(UNMARKED.length);
+        const drive = props.drives.find((d) => d.mount_point === mount);
+        const marker = await api.markTarget(mount, drive?.name || mount);
+        v = { ...v, target_id: marker.id };
+        form.setFieldValue("target_id", marker.id);
+        props.onDrivesChanged();
+      }
       const res = await api.saveJob(toJob(job, v), v.kind === "ftp" ? v.password : undefined);
       props.onSaved(res.config, res.warning);
     } catch (e) {
@@ -176,9 +242,10 @@ export default function JobDrawer(props: {
 
   const onKindChange = (k: "usb" | "ftp") => {
     setTestMsg(null);
-    const interval = form.getFieldValue("interval_minutes") as number;
     // FTP không có sự kiện "cắm ổ" -> gợi ý chạy mỗi giờ
-    if (k === "ftp" && !interval) form.setFieldValue("interval_minutes", 60);
+    if (k === "ftp" && form.getFieldValue("repeat") === "none") {
+      form.setFieldsValue({ repeat: "interval", interval_minutes: 60 });
+    }
     if (k === "usb" && !form.getFieldValue("target_id") && usbOptions[0]) {
       form.setFieldValue("target_id", usbOptions[0].value);
     }
@@ -220,7 +287,7 @@ export default function JobDrawer(props: {
           <Segmented<"usb" | "ftp">
             onChange={onKindChange}
             options={[
-              { value: "usb", label: "Ổ USB", icon: <UsbOutlined /> },
+              { value: "usb", label: "Ổ đĩa / USB", icon: <UsbOutlined /> },
               { value: "ftp", label: "FTP / FTPS", icon: <CloudServerOutlined /> },
             ]}
           />
@@ -232,12 +299,29 @@ export default function JobDrawer(props: {
             label="Ổ đích"
             rules={[{ required: true, message: "Chọn ổ đích" }]}
             extra={
-              usbOptions.length === 0
-                ? "Chưa có ổ đích. Cắm ổ USB rồi đánh dấu nó ở trang “Ổ đĩa & Cài đặt”."
-                : undefined
+              <Space orientation="vertical" size={2}>
+                <Checkbox
+                  checked={showAllDrives}
+                  onChange={(e) => {
+                    setShowAllDrives(e.target.checked);
+                    if (!e.target.checked && targetId?.startsWith(UNMARKED)) {
+                      form.setFieldValue("target_id", undefined);
+                    }
+                  }}
+                >
+                  Hiện tất cả ổ đĩa (cả ổ cứng trong máy, ổ chưa đánh dấu)
+                </Checkbox>
+                {targetId?.startsWith(UNMARKED) ? (
+                  <span>
+                    Ổ này chưa đánh dấu. Khi lưu, app ghi file <code>.backup-id</code> vào gốc ổ để nhận diện.
+                  </span>
+                ) : usbOptions.length === 0 ? (
+                  <span>Chưa có ổ đích. Cắm ổ USB, hoặc tick ô trên để chọn ổ bất kỳ.</span>
+                ) : null}
+              </Space>
             }
           >
-            <Select options={usbOptions} placeholder="Chọn ổ USB đã đánh dấu" />
+            <Select options={usbOptions} placeholder="Chọn ổ đích" />
           </Form.Item>
         )}
 
@@ -336,12 +420,64 @@ export default function JobDrawer(props: {
           </Form.Item>
         )}
         <Form.Item
-          name="interval_minutes"
+          name="repeat"
           label="Chạy định kỳ"
-          extra={kind === "usb" ? "Chỉ khi ổ đang cắm. 0 = tắt." : "0 = chỉ chạy thủ công."}
+          extra={
+            repeat === "none"
+              ? kind === "usb"
+                ? undefined
+                : "Chỉ chạy thủ công."
+              : kind === "usb"
+                ? "Chỉ chạy khi ổ đang cắm."
+                : undefined
+          }
         >
-          <InputNumber min={0} max={10080} suffix="phút" style={{ width: 160 }} />
+          <Segmented<Repeat>
+            options={[
+              { value: "none", label: "Tắt" },
+              { value: "interval", label: "Mỗi N phút" },
+              { value: "daily", label: "Hằng ngày" },
+              { value: "weekly", label: "Hằng tuần" },
+              { value: "monthly", label: "Hằng tháng" },
+            ]}
+          />
         </Form.Item>
+        {repeat === "interval" && (
+          <Form.Item name="interval_minutes" label="Mỗi" rules={[{ required: true, message: "Nhập số phút" }]}>
+            <InputNumber min={1} max={10080} suffix="phút" style={{ width: 160 }} />
+          </Form.Item>
+        )}
+        {repeat === "weekly" && (
+          <Form.Item
+            name="weekdays"
+            label="Vào các thứ"
+            rules={[{ required: true, type: "array", min: 1, message: "Chọn ít nhất một thứ" }]}
+          >
+            <Checkbox.Group options={WEEKDAYS.map((label, i) => ({ label, value: i + 1 }))} />
+          </Form.Item>
+        )}
+        {repeat === "monthly" && (
+          <Form.Item
+            name="month_day"
+            label="Vào ngày"
+            rules={[{ required: true, message: "Nhập ngày trong tháng" }]}
+            extra="Tháng không có ngày này thì chạy vào ngày cuối tháng."
+          >
+            <InputNumber min={1} max={31} style={{ width: 160 }} />
+          </Form.Item>
+        )}
+        {(repeat === "daily" || repeat === "weekly" || repeat === "monthly") && (
+          <Form.Item
+            name="at"
+            label="Lúc"
+            rules={[{ required: true, message: "Chọn giờ chạy" }]}
+            getValueProps={(v?: string) => ({ value: toTime(v) })}
+            normalize={(v: Dayjs | null) => (v ? v.format("HH:mm") : undefined)}
+            extra="Theo giờ của máy. Lỡ giờ (máy tắt, app chưa mở, ổ chưa cắm) thì chạy bù ngay khi có thể."
+          >
+            <TimePicker format="HH:mm" allowClear={false} needConfirm={false} style={{ width: 160 }} />
+          </Form.Item>
+        )}
 
         <Divider titlePlacement="start" plain>
           Phiên bản & xoá

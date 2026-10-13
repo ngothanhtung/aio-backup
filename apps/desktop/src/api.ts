@@ -31,6 +31,12 @@ export interface FtpTarget {
 
 export type Destination = { kind: "usb"; target_id: Uuid } | ({ kind: "ftp" } & FtpTarget);
 
+/** Lịch chạy vào giờ cố định. `at` dạng "HH:mm", `weekdays` 1 = thứ Hai ... 7 = Chủ nhật. */
+export type Schedule =
+  | { every: "daily"; at: string }
+  | { every: "weekly"; at: string; weekdays: number[] }
+  | { every: "monthly"; at: string; day: number };
+
 export interface Job {
   id: Uuid;
   name: string;
@@ -44,6 +50,7 @@ export interface Job {
   verify_hash: boolean;
   auto_run: boolean;
   interval_minutes: number | null;
+  schedule: Schedule | null;
 }
 
 export interface Config {
@@ -183,6 +190,7 @@ export function newJob(cfg: Config, usbTargetId?: Uuid): Job {
     verify_hash: false,
     auto_run: true,
     interval_minutes: usbTargetId ? null : 60,
+    schedule: null,
   };
 }
 

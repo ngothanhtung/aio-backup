@@ -89,7 +89,10 @@ export default function DrivesSettings({ data }: PageProps) {
   return (
     <div className="page">
       <div className="page-head">
-        <h1>Ổ đĩa & Cài đặt</h1>
+        <div className="page-title">
+          <h1>Ổ đĩa & Cài đặt</h1>
+          <p>Đánh dấu ổ USB làm ổ đích và chỉnh các thiết lập mặc định.</p>
+        </div>
       </div>
 
       <Card

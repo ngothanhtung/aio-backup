@@ -175,7 +175,10 @@ export default function Restore({ data, initialJobId }: PageProps & { initialJob
     return (
       <div className="page">
         <div className="page-head">
+          <div className="page-title">
           <h1>Khôi phục</h1>
+          <p>Lấy lại file từ bản backup mới nhất hoặc từ các phiên bản cũ.</p>
+        </div>
         </div>
         <Empty description="Chưa có job nào để khôi phục" />
       </div>
@@ -193,7 +196,10 @@ export default function Restore({ data, initialJobId }: PageProps & { initialJob
   return (
     <div className="page">
       <div className="page-head">
-        <h1>Khôi phục</h1>
+        <div className="page-title">
+          <h1>Khôi phục</h1>
+          <p>Lấy lại file từ bản backup mới nhất hoặc từ các phiên bản cũ.</p>
+        </div>
       </div>
 
       <Row gutter={[16, 16]}>

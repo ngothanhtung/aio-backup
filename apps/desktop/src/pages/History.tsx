@@ -57,7 +57,10 @@ export default function History({ data }: PageProps) {
   return (
     <div className="page">
       <div className="page-head">
-        <h1>Lịch sử</h1>
+        <div className="page-title">
+          <h1>Lịch sử</h1>
+          <p>Mọi lượt chạy của các job, kể cả lượt lỗi và lượt xem trước.</p>
+        </div>
         <Button icon={<ReloadOutlined />} onClick={refreshHistory}>
           Làm mới
         </Button>

@@ -10,6 +10,7 @@ import {
 import { api, errText, newJob, type Job } from "./api";
 import { useAppData, type AppData } from "./useAppData";
 import JobDrawer from "./components/JobDrawer";
+import { isReady } from "./components/JobCard";
 import TitleBar from "./components/TitleBar";
 import Dashboard from "./pages/Dashboard";
 import Jobs from "./pages/Jobs";
@@ -19,17 +20,34 @@ import DrivesSettings from "./pages/DrivesSettings";
 
 export type PageKey = "dashboard" | "jobs" | "history" | "restore" | "drives";
 
-const navItems: { key: PageKey; icon: ReactNode; label: string }[] = [
-  { key: "dashboard", icon: <DashboardOutlined />, label: "Tổng quan" },
-  { key: "jobs", icon: <UnorderedListOutlined />, label: "Job backup" },
-  { key: "history", icon: <HistoryOutlined />, label: "Lịch sử" },
-  { key: "restore", icon: <RollbackOutlined />, label: "Khôi phục" },
-  { key: "drives", icon: <HddOutlined />, label: "Ổ đĩa & Cài đặt" },
+type NavItem = { key: PageKey; icon: ReactNode; label: string };
+
+const navGroups: { title: string; items: NavItem[] }[] = [
+  {
+    title: "Giám sát",
+    items: [
+      { key: "dashboard", icon: <DashboardOutlined />, label: "Tổng quan" },
+      { key: "history", icon: <HistoryOutlined />, label: "Lịch sử" },
+    ],
+  },
+  {
+    title: "Sao lưu",
+    items: [
+      { key: "jobs", icon: <UnorderedListOutlined />, label: "Job backup" },
+      { key: "restore", icon: <RollbackOutlined />, label: "Khôi phục" },
+    ],
+  },
+  {
+    title: "Hệ thống",
+    items: [{ key: "drives", icon: <HddOutlined />, label: "Ổ đĩa & Cài đặt" }],
+  },
 ];
 
 /** Thao tác trên job, dùng chung cho các trang. */
 export interface JobActions {
   run: (job: Job, dryRun: boolean) => void;
+  /** Chạy mọi job đang sẵn sàng (đích có mặt, chưa chạy). */
+  runAll: () => void;
   cancel: (job: Job) => void;
   edit: (job: Job) => void;
   remove: (job: Job) => void;
@@ -63,15 +81,22 @@ export default function App() {
   const [editing, setEditing] = useState<Job | null>(null);
   const [restoreJob, setRestoreJob] = useState<string | undefined>();
 
+  const run = async (job: Job, dryRun: boolean) => {
+    data.markRunning(job.id, dryRun);
+    try {
+      await api.startJob(job.id, dryRun);
+    } catch (e) {
+      data.clearRunning(job.id);
+      message.error(errText(e));
+    }
+  };
+
   const actions: JobActions = {
-    run: async (job, dryRun) => {
-      data.markRunning(job.id, dryRun);
-      try {
-        await api.startJob(job.id, dryRun);
-      } catch (e) {
-        data.clearRunning(job.id);
-        message.error(errText(e));
-      }
+    run,
+    runAll: () => {
+      const ready = data.config.jobs.filter((j) => !data.running[j.id] && isReady(j, data));
+      ready.forEach((j) => run(j, false));
+      if (ready.length) message.info(`Đã bắt đầu ${ready.length} job`);
     },
     cancel: (job) => api.cancelJob(job.id),
     edit: (job) => setEditing(structuredClone(job)),
@@ -101,25 +126,38 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand" data-tauri-drag-region>
           <img src="/icon.png" alt="" />
-          <span>AIO Backup</span>
+          <div className="brand-text">
+            <span>AIO Backup</span>
+            <small>Sao lưu USB & FTP</small>
+          </div>
         </div>
         <nav className="nav">
-          {navItems.map((item) => (
-            <button
-              key={item.key}
-              className={page === item.key ? "nav-item active" : "nav-item"}
-              title={item.label}
-              onClick={() => setPage(item.key)}
-            >
-              {item.icon}
-              <span className="nav-label">{item.label}</span>
-              {item.key === "jobs" && runningCount > 0 && <span className="nav-badge">{runningCount}</span>}
-            </button>
+          {navGroups.map((g) => (
+            <div key={g.title} className="nav-group">
+              <div className="nav-group-title">{g.title}</div>
+              {g.items.map((item) => (
+                <button
+                  key={item.key}
+                  className={page === item.key ? "nav-item active" : "nav-item"}
+                  title={item.label}
+                  onClick={() => setPage(item.key)}
+                >
+                  {item.icon}
+                  <span className="nav-label">{item.label}</span>
+                  {item.key === "jobs" && runningCount > 0 && <span className="nav-badge">{runningCount}</span>}
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
         <div className="sidebar-foot">
           <span className={runningCount ? "status-dot busy" : "status-dot"} />
-          <span>{runningCount ? `Đang chạy ${runningCount} job` : "Sẵn sàng"}</span>
+          <div className="sidebar-foot-text">
+            <span>{runningCount ? `Đang chạy ${runningCount} job` : "Sẵn sàng"}</span>
+            <small>
+              {data.presentTargets.size} ổ đích · {data.config.jobs.length} job
+            </small>
+          </div>
         </div>
       </aside>
       <div className="main">

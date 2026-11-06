@@ -1,24 +1,49 @@
 :root {
   --titlebar-h: 40px;
-  --sidebar-w: 216px;
-  --shell-bg: #eceef2;
-  --content-bg: #f8f9fb;
-  --line: rgba(0, 0, 0, 0.08);
-  --hover: rgba(0, 0, 0, 0.05);
-  --active: rgba(0, 0, 0, 0.08);
+  --sidebar-w: 232px;
+  --shell-bg: #e9ecf1;
+  --content-bg: #f4f6f9;
+  --card: #ffffff;
+  --card-sunken: #f6f8fa;
+  --line: rgba(15, 23, 42, 0.08);
+  --line-strong: rgba(15, 23, 42, 0.14);
+  --hover: rgba(15, 23, 42, 0.05);
+  --active: rgba(15, 23, 42, 0.08);
   --text: #1f2328;
   --muted: #656d76;
-  --accent: #1f6feb;
+  --faint: #8c959f;
+  --accent: #2563eb;
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 2px 8px rgba(15, 23, 42, 0.04);
+  --shadow-hover: 0 2px 4px rgba(15, 23, 42, 0.06), 0 8px 24px rgba(15, 23, 42, 0.08);
+
+  /* Màu trạng thái: chỉ dùng cho kết quả backup, luôn đi kèm icon + chữ */
+  --ok: #1a7f37;
+  --err: #cf222e;
+  --warn: #bf8700;
+  --busy: #2563eb;
+  --off: #8c959f;
 }
 html[data-theme="dark"] {
-  --shell-bg: #17181b;
-  --content-bg: #1e1f22;
-  --line: rgba(255, 255, 255, 0.08);
+  --shell-bg: #0f1012;
+  --content-bg: #141518;
+  --card: #1c1d21;
+  --card-sunken: #17181b;
+  --line: rgba(255, 255, 255, 0.07);
+  --line-strong: rgba(255, 255, 255, 0.13);
   --hover: rgba(255, 255, 255, 0.06);
   --active: rgba(255, 255, 255, 0.1);
   --text: #e6e8eb;
   --muted: #9198a1;
-  --accent: #4c8dff;
+  --faint: #6e7681;
+  --accent: #5b8cff;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-hover: 0 4px 16px rgba(0, 0, 0, 0.4);
+
+  --ok: #3fb950;
+  --err: #f85149;
+  --warn: #d29922;
+  --busy: #5b8cff;
+  --off: #6e7681;
 }
 
 html,
@@ -84,10 +109,8 @@ textarea,
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 52px;
+  height: 64px;
   padding: 0 18px;
-  font-weight: 600;
-  font-size: 14px;
   white-space: nowrap;
   overflow: hidden;
 }
@@ -96,23 +119,53 @@ textarea,
   pointer-events: none;
 }
 .brand img {
-  width: 22px;
-  height: 22px;
+  width: 30px;
+  height: 30px;
   flex-shrink: 0;
+  border-radius: 8px;
+}
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+.brand-text span {
+  font-weight: 650;
+  font-size: 14px;
+  letter-spacing: -0.01em;
+}
+.brand-text small {
+  color: var(--muted);
+  font-size: 11px;
 }
 html.is-mac .brand {
   /* Chừa chỗ cho nút đèn giao thông */
   padding-top: 28px;
-  height: 76px;
+  height: 88px;
 }
 
 .nav {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 4px 8px;
+  gap: 14px;
+  padding: 6px 10px;
   flex: 1;
   overflow-y: auto;
+}
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.nav-group-title {
+  padding: 0 12px 4px;
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 .nav-item {
   position: relative;
@@ -122,7 +175,7 @@ html.is-mac .brand {
   height: 36px;
   padding: 0 12px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
   color: var(--text);
   font: inherit;
@@ -144,7 +197,8 @@ html.is-mac .brand {
   outline-offset: -2px;
 }
 .nav-item.active {
-  background: var(--active);
+  background: var(--card);
+  box-shadow: var(--shadow);
   font-weight: 600;
 }
 .nav-item.active .anticon {
@@ -181,22 +235,39 @@ html.is-mac .brand {
 .sidebar-foot {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 12px 20px 14px;
-  color: var(--muted);
-  font-size: 12px;
+  gap: 10px;
+  margin: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
   white-space: nowrap;
   overflow: hidden;
+}
+.sidebar-foot-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.sidebar-foot-text small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
 }
 .status-dot {
   flex-shrink: 0;
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #2da44e;
+  background: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent);
 }
 .status-dot.busy {
-  background: var(--accent);
+  background: var(--busy);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--busy) 20%, transparent);
   animation: pulse 1.2s ease-in-out infinite;
 }
 @keyframes pulse {
@@ -249,22 +320,27 @@ html.is-mac .brand {
   background: var(--content-bg);
   border-top: 1px solid var(--line);
   border-inline-start: 1px solid var(--line);
-  border-start-start-radius: 10px;
+  border-start-start-radius: 12px;
 }
 
 /* Cửa sổ hẹp: sidebar chỉ còn icon */
 @media (max-width: 960px) {
   :root {
-    --sidebar-w: 56px;
+    --sidebar-w: 60px;
   }
   .brand {
-    padding: 0 17px;
+    padding: 0 15px;
   }
-  .brand span,
+  .brand-text,
   .nav-label,
   .nav-badge,
-  .sidebar-foot span:not(.status-dot) {
+  .nav-group-title,
+  .sidebar-foot-text {
     display: none;
+  }
+  .nav {
+    gap: 10px;
+    padding-inline: 8px;
   }
   .nav-item {
     justify-content: center;
@@ -272,7 +348,8 @@ html.is-mac .brand {
   }
   .sidebar-foot {
     justify-content: center;
-    padding-inline: 0;
+    margin: 8px;
+    padding: 12px 0;
   }
 }
 
@@ -285,45 +362,206 @@ body .ant-modal-wrap {
 
 /* ---------- Trang ---------- */
 
+/* Giãn hết chiều rộng cửa sổ, kể cả khi phóng to */
 .page {
-  padding: 20px 28px 36px;
-  max-width: 1200px;
+  padding: 24px 32px 40px;
+}
+@media (min-width: 1600px) {
+  .page {
+    padding-inline: 40px;
+  }
 }
 
 .page-head {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 18px;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 20px;
 }
 .page-head h1 {
-  font-size: 20px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
   margin: 0;
+}
+.page-title p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.page-extra {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .ant-card {
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  box-shadow: var(--shadow);
 }
 
-.stat-card {
-  height: 100%;
+/* Khối nền trắng dùng chung */
+.panel,
+.stat-card,
+.job-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
 }
-.stat-card .ant-card-body {
+.panel {
+  padding: 16px 18px 18px;
+}
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 24px;
+  margin-bottom: 14px;
+}
+.panel-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.panel-note {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.side-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ---------- Khối trạng thái bảo vệ ---------- */
+
+.hero {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  margin-bottom: 16px;
+  padding: 24px 26px;
+  border: 1px solid color-mix(in srgb, var(--tone) 22%, var(--line));
+  border-radius: 16px;
+  background:
+    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--tone) 14%, transparent) 0%, transparent 60%),
+    var(--card);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.hero-shield {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 72px;
+  height: 72px;
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--tone) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tone) 25%, transparent);
+  color: var(--tone);
+  font-size: 36px;
+}
+.hero-body {
+  flex: 1;
+  min-width: 0;
+}
+.hero-eyebrow {
+  color: var(--tone);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.hero h2 {
+  margin: 2px 0 4px;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
+.hero p {
+  margin: 0;
+  color: var(--muted);
+}
+.hero-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 28px;
+  margin-top: 14px;
+}
+.hero-facts div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.hero-facts span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.hero-facts b {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.hero-facts em {
+  color: var(--muted);
+  font-style: normal;
+  font-weight: 400;
+}
+.hero-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 460px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.hero-progress .ant-progress {
+  flex: 1;
+  margin: 0;
+}
+.hero-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+@media (max-width: 1100px) {
+  .hero {
+    flex-wrap: wrap;
+  }
+  .hero-actions {
+    flex-direction: row;
+    width: 100%;
+    padding-left: 94px;
+  }
+}
+
+/* ---------- Ô chỉ số ---------- */
+
+.stats {
+  margin-bottom: 16px;
+}
+.stat-card {
   display: flex;
   align-items: flex-start;
   gap: 12px;
+  height: 100%;
   padding: 16px;
+  box-sizing: border-box;
 }
 .stat-icon {
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
   font-size: 18px;
 }
 .stat-body {
@@ -339,11 +577,340 @@ body .ant-modal-wrap {
 }
 .stat-value {
   margin: 2px 0;
-  font-size: 20px;
-  font-weight: 600;
+  font-size: 22px;
+  font-weight: 650;
   line-height: 1.3;
+  letter-spacing: -0.01em;
   font-variant-numeric: tabular-nums;
 }
+
+/* ---------- Thẻ job ---------- */
+
+/* Cửa sổ rộng thì tự chia thêm cột thay vì kéo dài từng thẻ */
+.job-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 10px;
+}
+.job-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+  gap: 14px;
+}
+.filter-bar {
+  margin-bottom: 16px;
+}
+
+.job-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  padding: 16px 18px;
+  transition:
+    box-shadow 0.15s,
+    border-color 0.15s;
+}
+.job-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-hover);
+}
+.job-card[data-state="error"] {
+  border-color: color-mix(in srgb, var(--err) 35%, var(--line));
+}
+.job-card[data-state="running"] {
+  border-color: color-mix(in srgb, var(--busy) 40%, var(--line));
+}
+.job-card.compact {
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--card-sunken);
+  box-shadow: none;
+}
+.job-card.compact:hover {
+  background: var(--card);
+}
+
+.job-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+}
+.job-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font-size: 17px;
+}
+.job-card.compact .job-icon {
+  width: 32px;
+  height: 32px;
+  font-size: 15px;
+}
+.job-title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+.job-name.ant-typography {
+  font-size: 14px;
+}
+.job-sub.ant-typography {
+  font-size: 12px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--tone) 13%, transparent);
+  color: var(--tone);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 6px;
+  background: var(--hover);
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.flow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--card-sunken);
+  border: 1px solid var(--line);
+}
+.flow-end {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.flow-end > .anticon {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 15px;
+}
+.flow-end > .ant-typography {
+  flex: 1;
+  min-width: 0;
+}
+.flow-end.missing,
+.flow-end.missing .ant-typography {
+  color: var(--faint);
+}
+.flow-arrow {
+  color: var(--accent);
+}
+
+.job-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 28px;
+}
+.meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.meta-label {
+  color: var(--faint);
+  font-size: 11px;
+}
+.meta-value {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.job-card.compact .job-meta {
+  gap: 4px 20px;
+}
+.job-card.compact .meta {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 6px;
+}
+.job-card.compact .meta-value {
+  font-size: 12px;
+}
+
+.job-preview {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.job-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+}
+.job-card.compact .job-card-foot {
+  padding-top: 0;
+  border-top: 0;
+}
+.job-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.run-dots {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  overflow: hidden;
+}
+.run-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--tone);
+}
+.run-dot.empty {
+  background: var(--line);
+}
+
+/* ---------- Biểu đồ hoạt động ---------- */
+
+.chart {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  height: 132px;
+}
+.chart-col {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  gap: 6px;
+  border-radius: 4px;
+}
+.chart-col:hover {
+  background: var(--hover);
+}
+.chart-track {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  flex: 1;
+  border-bottom: 1px solid var(--line-strong);
+}
+.chart-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: min(100%, 16px);
+  min-height: 4px;
+  border-radius: 4px 4px 0 0;
+  overflow: hidden;
+}
+.chart-bar .seg {
+  flex-basis: 0;
+  min-height: 2px;
+  background: var(--tone);
+}
+.chart-x {
+  color: var(--faint);
+  font-size: 10px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.chart-x.today {
+  color: var(--text);
+  font-weight: 700;
+}
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--tone);
+}
+
+/* ---------- Đích lưu trữ ---------- */
+
+.targets {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.target-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.target-head > .anticon {
+  color: var(--muted);
+}
+.target-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.target-note,
+.target-foot {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.target .ant-progress {
+  margin: 4px 0 0;
+}
+
+/* ---------- Khác ---------- */
 
 .mono {
   font-family: "Cascadia Mono", ui-monospace, Menlo, Consolas, monospace;
@@ -375,4 +942,26 @@ body .ant-modal-wrap {
 .dest-label > .ant-typography {
   flex: 1;
   min-width: 0;
+}
+
+/* Tông màu trạng thái cho khối, nhãn, chấm, cột biểu đồ. Để cuối file để không bị
+   khai báo của từng khối đè lên. */
+.tone-ok {
+  --tone: var(--ok);
+}
+.tone-error {
+  --tone: var(--err);
+}
+.tone-warn,
+.tone-never {
+  --tone: var(--warn);
+}
+.tone-running,
+.tone-busy {
+  --tone: var(--busy);
+}
+.tone-cancelled,
+.tone-waiting,
+.tone-idle {
+  --tone: var(--off);
 }

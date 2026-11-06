@@ -49,23 +49,30 @@ function Root() {
       theme={{
         algorithm: dark ? theme.darkAlgorithm : theme.defaultAlgorithm,
         token: {
-          colorPrimary: dark ? "#4c8dff" : "#1f6feb",
-          borderRadius: 6,
+          colorPrimary: dark ? "#5b8cff" : "#2563eb",
+          colorSuccess: dark ? "#3fb950" : "#1a7f37",
+          colorWarning: dark ? "#d29922" : "#bf8700",
+          colorError: dark ? "#f85149" : "#cf222e",
+          borderRadius: 8,
+          borderRadiusLG: 12,
           fontSize: 13,
-          controlHeight: 30,
+          controlHeight: 32,
           fontFamily:
             '"Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Roboto, "Noto Sans", sans-serif',
-          colorBgLayout: dark ? "#1e1f22" : "#f8f9fb",
-          ...(dark ? { colorBgContainer: "#26272b", colorBgElevated: "#2c2d31" } : {}),
+          colorBgLayout: dark ? "#141518" : "#f4f6f9",
+          colorBorderSecondary: dark ? "#2c2e33" : "#e6e9ef",
+          ...(dark ? { colorBgContainer: "#1c1d21", colorBgElevated: "#24262b" } : {}),
         },
         components: {
           Table: {
             headerBg: "transparent",
             headerSplitColor: "transparent",
             headerColor: dark ? "#9198a1" : "#656d76",
-            cellPaddingBlock: 10,
+            cellPaddingBlock: 12,
           },
-          Card: { headerFontSize: 14, headerHeight: 44 },
+          Card: { headerFontSize: 14, headerHeight: 48 },
+          Button: { fontWeight: 500, primaryShadow: "none", defaultShadow: "none" },
+          Segmented: { itemSelectedBg: dark ? "#2c2e33" : "#ffffff" },
         },
       }}
     >

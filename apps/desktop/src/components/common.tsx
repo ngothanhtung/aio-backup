@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Progress, Space, Tag, Tooltip, Typography } from "antd";
 import {
   CheckCircleFilled,
@@ -11,6 +12,19 @@ import {
 import dayjs from "dayjs";
 import { bytes, ftpUrl, reportStatus, type DriveInfo, type Job, type Report, type Schedule } from "../api";
 import type { RunState } from "../useAppData";
+
+/** Đầu trang: tiêu đề, một dòng mô tả và nút thao tác bên phải. */
+export function PageHead({ title, sub, extra }: { title: string; sub?: ReactNode; extra?: ReactNode }) {
+  return (
+    <div className="page-head">
+      <div className="page-title">
+        <h1>{title}</h1>
+        {sub && <p>{sub}</p>}
+      </div>
+      {extra && <div className="page-extra">{extra}</div>}
+    </div>
+  );
+}
 
 /** Nhãn đích: USB (tên ổ) hoặc FTP (url). */
 export function DestLabel({ job, drive }: { job: Job; drive?: DriveInfo }) {

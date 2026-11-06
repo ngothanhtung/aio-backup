@@ -127,6 +127,20 @@ export function useAppData(onFinished?: (e: FinishedEvent) => void) {
     return m;
   }, [history]);
 
+  /** Tối đa 12 lượt chạy thật gần nhất của từng job, mới nhất trước. */
+  const recentRunsByJob = useMemo(() => {
+    const m = new Map<Uuid, HistoryEntry[]>();
+    for (const e of history) {
+      if (e.report.dryRun) continue;
+      const list = m.get(e.jobId) ?? [];
+      if (list.length < 12) list.push(e);
+      m.set(e.jobId, list);
+    }
+    return m;
+  }, [history]);
+
+  const scheduleByJob = useMemo(() => new Map(schedule.map((s) => [s.jobId, s] as const)), [schedule]);
+
   const targets = useMemo(() => drives.filter((d) => d.marker), [drives]);
   const presentTargets = useMemo(
     () => new Map(targets.map((d) => [d.marker!.id, d] as const)),
@@ -149,7 +163,9 @@ export function useAppData(onFinished?: (e: FinishedEvent) => void) {
     refreshHistory,
     schedule,
     refreshSchedule,
+    scheduleByJob,
     lastRunByJob,
+    recentRunsByJob,
   };
 }
 
